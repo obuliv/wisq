@@ -11,8 +11,10 @@ from functools import lru_cache
 
 from app.chat.orchestrator import ChatOrchestrator
 from app.config import get_settings
-from app.ingestion.chunking import Chunker, SimpleChunker
+from app.ingestion.chunking import Chunker, SectionAwareChunker
+from app.ingestion.metadata import CompositeMetadataExtractor, DocumentMetadataExtractor
 from app.ingestion.pipeline import IngestionPipeline
+from app.ingestion.relationships import SectionAnnotationExtractor
 from app.llm.fakes import FakeLLMClient
 from app.llm.interfaces import LLMClient
 from app.rag.fakes import FakeEmbedder, InMemoryVectorStore
@@ -29,7 +31,17 @@ def get_document_store() -> DocumentStore:
 
 @lru_cache
 def get_chunker() -> Chunker:
-    return SimpleChunker()
+    return SectionAwareChunker()
+
+
+@lru_cache
+def get_metadata_extractor() -> DocumentMetadataExtractor:
+    return CompositeMetadataExtractor(llm_client=get_llm_client())
+
+
+@lru_cache
+def get_relationship_extractor() -> SectionAnnotationExtractor:
+    return SectionAnnotationExtractor(llm_client=get_llm_client())
 
 
 @lru_cache
@@ -59,7 +71,11 @@ def get_llm_client() -> LLMClient:
 @lru_cache
 def get_ingestion_pipeline() -> IngestionPipeline:
     return IngestionPipeline(
-        chunker=get_chunker(), embedder=get_embedder(), vector_store=get_vector_store()
+        chunker=get_chunker(),
+        embedder=get_embedder(),
+        vector_store=get_vector_store(),
+        metadata_extractor=get_metadata_extractor(),
+        relationship_extractor=get_relationship_extractor(),
     )
 
 

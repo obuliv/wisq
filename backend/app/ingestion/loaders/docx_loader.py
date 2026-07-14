@@ -1,40 +1,46 @@
 from pathlib import Path
 
-import docx
+from unstructured.partition.docx import partition_docx
 
-from app.ingestion.loaders.base import RawSection
+from app.ingestion.loaders.base import Element
 
 
 class DocxLoader:
-    """Extracts paragraph-level text (and table cell text) from a .docx file."""
+    """Extracts structural elements (titles, sections, paragraphs, tables) from a
+    .docx file via `unstructured`, and builds a heading-path breadcrumb for each
+    element by walking a depth-keyed stack of preceding Title-category elements.
+    A PdfLoader can reuse this exact heading-stack logic against partition_pdf's
+    output, since unstructured normalizes both formats to the same element shape.
+    """
 
-    def load(self, file_path: Path) -> list[RawSection]:
-        document = docx.Document(str(file_path))
-        sections: list[RawSection] = []
+    def load(self, file_path: Path) -> list[Element]:
+        raw_elements = partition_docx(filename=str(file_path))
 
-        for i, paragraph in enumerate(document.paragraphs):
-            text = paragraph.text.strip()
+        elements: list[Element] = []
+        stack: list[tuple[int, str]] = []  # (depth, heading_text)
+
+        for i, el in enumerate(raw_elements):
+            text = str(el).strip()
             if not text:
                 continue
-            sections.append(
-                RawSection(
+
+            category = el.category
+            depth = getattr(el.metadata, "category_depth", None) or 0
+            page_number = getattr(el.metadata, "page_number", None)
+            locator = f"page {page_number}, element {i}" if page_number is not None else f"element {i}"
+
+            if category == "Title":
+                while stack and stack[-1][0] >= depth:
+                    stack.pop()
+                stack.append((depth, text))
+
+            elements.append(
+                Element(
                     text=text,
-                    locator=f"paragraph {i}",
-                    metadata={"style": paragraph.style.name if paragraph.style else None},
+                    category=category,
+                    heading_path=[heading for _, heading in stack],
+                    locator=locator,
                 )
             )
 
-        for t, table in enumerate(document.tables):
-            for r, row in enumerate(table.rows):
-                row_text = " | ".join(cell.text.strip() for cell in row.cells).strip()
-                if not row_text:
-                    continue
-                sections.append(
-                    RawSection(
-                        text=row_text,
-                        locator=f"table {t} row {r}",
-                        metadata={"style": "table"},
-                    )
-                )
-
-        return sections
+        return elements

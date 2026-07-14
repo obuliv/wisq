@@ -4,9 +4,10 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
-python-docx==1.1.2
 python-multipart==0.0.19
 qdrant-client==1.12.1
+unstructured[docx]==0.16.11
+rapidfuzz==3.10.1
 
 # test-only
 pytest==8.3.4

@@ -4,6 +4,12 @@ export interface DocumentOut {
   content_type: string;
   status: "queued" | "processing" | "ready" | "failed";
   error_message: string | null;
+  doc_type: string | null;
+  title: string | null;
+  version: string | null;
+  effective_date: string | null;
+  applicable_regions: { included: string[]; excluded: string[] } | null;
+  is_latest: boolean;
   doc_metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;

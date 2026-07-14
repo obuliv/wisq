@@ -144,6 +144,23 @@ main {
   background: #fef9c3;
 }
 
+.version-badge {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.version-latest {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.version-superseded {
+  background: #e5e5e5;
+  color: #555;
+}
+
 .doc-error {
   color: #b91c1c;
   font-size: 0.75rem;

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from app.ingestion.loaders.base import RawSection
+from app.ingestion.loaders.base import Element
 
 
 @dataclass
@@ -13,44 +13,70 @@ class Chunk:
 
 
 class Chunker(Protocol):
-    def split(self, doc_id: str, sections: list[RawSection]) -> list[Chunk]: ...
+    def split(self, doc_id: str, elements: list[Element]) -> list[Chunk]: ...
 
 
-class SimpleChunker:
-    """Placeholder default: one chunk per RawSection, merged up to max_chars.
-
-    Chunking strategy (token-aware splitting, overlap, semantic grouping) is a RAG
-    deep-dive decision — this exists only so the ingestion pipeline is runnable
-    end-to-end until that design lands.
+class SectionAwareChunker:
+    """Groups elements under their nearest heading into one chunk per section,
+    splitting further only when a section's content exceeds max_chars. Each
+    chunk's `metadata["heading_path"]` carries the section/subsection breadcrumb
+    from the loader, so retrieval/citation stays section-aware. Operates purely
+    on our normalized `Element` type, so it's identical for docx and (later) pdf.
     """
 
-    def __init__(self, max_chars: int = 1000) -> None:
+    def __init__(self, max_chars: int = 1500) -> None:
         self._max_chars = max_chars
 
-    def split(self, doc_id: str, sections: list[RawSection]) -> list[Chunk]:
+    def split(self, doc_id: str, elements: list[Element]) -> list[Chunk]:
         chunks: list[Chunk] = []
         buffer: list[str] = []
         buffer_len = 0
-        first_locator: str | None = None
+        has_content = False  # True once buffer holds more than just its heading
+        heading_path: list[str] = []
+        locator: str | None = None
 
         def flush() -> None:
-            nonlocal buffer, buffer_len, first_locator
-            if buffer:
-                chunks.append(
-                    Chunk(doc_id=doc_id, text="\n".join(buffer), locator=first_locator)
-                )
+            nonlocal buffer, buffer_len, has_content
+            # A title with no content under it (e.g. the document's own root
+            # title, immediately followed by the first real section) isn't a
+            # useful standalone chunk -- drop it rather than emit an embedding
+            # for a bare heading.
+            if has_content:
+                text = "\n".join(buffer).strip()
+                if text:
+                    chunks.append(
+                        Chunk(
+                            doc_id=doc_id,
+                            text=text,
+                            locator=locator,
+                            metadata={"heading_path": list(heading_path)},
+                        )
+                    )
             buffer = []
             buffer_len = 0
-            first_locator = None
+            has_content = False
 
-        for section in sections:
-            if first_locator is None:
-                first_locator = section.locator
-            if buffer_len + len(section.text) > self._max_chars and buffer:
+        for element in elements:
+            if element.category == "Title":
                 flush()
-                first_locator = section.locator
-            buffer.append(section.text)
-            buffer_len += len(section.text)
+                heading_path = element.heading_path
+                locator = element.locator
+                buffer = [element.text]
+                buffer_len = len(element.text)
+                continue
+
+            if buffer_len + len(element.text) > self._max_chars and buffer:
+                flush()
+                # Re-seed the continuation chunk with the (sub)heading so it's
+                # still self-describing on its own.
+                heading_text = heading_path[-1] if heading_path else None
+                buffer = [heading_text] if heading_text else []
+                buffer_len = len(heading_text) if heading_text else 0
+                locator = element.locator
+
+            buffer.append(element.text)
+            buffer_len += len(element.text)
+            has_content = True
 
         flush()
         return chunks

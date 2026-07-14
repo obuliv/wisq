@@ -17,7 +17,7 @@ def test_upload_docx_gets_indexed(client):
         "/api/documents",
         files={
             "file": (
-                "sample.docx",
+                "Sample Handbook - version 1.docx",
                 content,
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
@@ -29,7 +29,13 @@ def test_upload_docx_gets_indexed(client):
 
     detail = client.get(f"/api/documents/{doc_id}")
     assert detail.status_code == 200
-    assert detail.json()["status"] == "ready"
+    body = detail.json()
+    assert body["status"] == "ready"
+    # Filename-derived metadata extraction runs even with a FakeLLMClient wired,
+    # since it's regex-based, not LLM-based.
+    assert body["title"] == "Sample Handbook"
+    assert body["version"] == "1"
+    assert body["is_latest"] is True
 
 
 def test_list_documents(client):

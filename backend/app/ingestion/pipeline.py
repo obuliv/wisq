@@ -1,22 +1,46 @@
+import logging
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document, DocumentStatus
-from app.ingestion.chunking import Chunker
-from app.ingestion.loaders.base import get_loader
+from app.ingestion.chunking import Chunk, Chunker
+from app.ingestion.loaders.base import Element, get_loader
+from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope
+from app.ingestion.relationships import SectionAnnotationExtractor, extract_and_store_relationships
+from app.ingestion.versioning import resolve_latest
 from app.rag.interfaces import EmbeddedChunk, Embedder, VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionPipeline:
-    """Orchestrates load -> chunk -> embed -> upsert for one document, updating its
-    status row as it goes. Which Embedder/VectorStore/Chunker are plugged in is a
-    RAG deep-dive concern; this module only sequences the steps."""
+    """Orchestrates the full ingestion sequence for one document, updating its
+    status row as it goes:
 
-    def __init__(self, chunker: Chunker, embedder: Embedder, vector_store: VectorStore) -> None:
+        load -> [metadata extraction -> version resolution -> relationship
+        extraction] -> chunk -> embed -> upsert
+
+    The bracketed enrichment stages are best-effort: a failure there is logged
+    and skipped, not raised, since they enrich the document rather than being
+    required to index it. Only a load/chunk/embed/upsert failure marks the
+    document FAILED. Which Embedder/VectorStore/Chunker/extractors are plugged
+    in is a RAG deep-dive concern; this module only sequences the steps.
+    """
+
+    def __init__(
+        self,
+        chunker: Chunker,
+        embedder: Embedder,
+        vector_store: VectorStore,
+        metadata_extractor: DocumentMetadataExtractor,
+        relationship_extractor: SectionAnnotationExtractor,
+    ) -> None:
         self._chunker = chunker
         self._embedder = embedder
         self._vector_store = vector_store
+        self._metadata_extractor = metadata_extractor
+        self._relationship_extractor = relationship_extractor
 
     async def run(self, db: AsyncSession, doc_id: str, file_path: Path) -> None:
         document = await db.get(Document, doc_id)
@@ -28,11 +52,19 @@ class IngestionPipeline:
             await db.commit()
 
             loader = get_loader(file_path.suffix)
-            sections = loader.load(file_path)
-            chunks = self._chunker.split(doc_id, sections)
+            elements = loader.load(file_path)
+
+            self._apply_metadata(document, file_path.name, elements)
+            await self._resolve_version(db, document)
+            geo_overrides = await self._extract_relationships(db, document, elements)
+
+            chunks = self._chunker.split(doc_id, elements)
+            self._enrich_chunk_metadata(chunks, document, geo_overrides)
 
             vectors = self._embedder.embed([c.text for c in chunks])
-            embedded = [EmbeddedChunk(chunk=c, vector=v) for c, v in zip(chunks, vectors, strict=True)]
+            embedded = [
+                EmbeddedChunk(chunk=c, vector=v) for c, v in zip(chunks, vectors, strict=True)
+            ]
             self._vector_store.upsert(doc_id, embedded)
 
             document.status = DocumentStatus.READY
@@ -42,3 +74,70 @@ class IngestionPipeline:
             document.error_message = str(exc)
         finally:
             await db.commit()
+
+    def _apply_metadata(self, document: Document, filename: str, elements: list[Element]) -> None:
+        try:
+            metadata = self._metadata_extractor.extract(filename, elements)
+        except Exception:
+            logger.exception("Metadata extraction failed for document %s", document.id)
+            return
+
+        document.doc_type = metadata.doc_type or document.doc_type
+        document.title = metadata.title or document.title
+        document.version = metadata.version or document.version
+        document.effective_date = metadata.effective_date or document.effective_date
+        if metadata.applicable_regions is not None:
+            document.applicable_regions = metadata.applicable_regions.model_dump()
+
+    async def _resolve_version(self, db: AsyncSession, document: Document) -> None:
+        try:
+            await resolve_latest(db, document)
+        except Exception:
+            logger.exception("Version resolution failed for document %s", document.id)
+
+    async def _extract_relationships(
+        self, db: AsyncSession, document: Document, elements: list[Element]
+    ) -> dict[tuple[str, ...], GeographicScope]:
+        try:
+            return await extract_and_store_relationships(
+                db, document, elements, self._relationship_extractor
+            )
+        except Exception:
+            logger.exception("Relationship extraction failed for document %s", document.id)
+            return {}
+
+    def _enrich_chunk_metadata(
+        self,
+        chunks: list[Chunk],
+        document: Document,
+        geo_overrides: dict[tuple[str, ...], GeographicScope],
+    ) -> None:
+        default_scope = (
+            GeographicScope(**document.applicable_regions) if document.applicable_regions else None
+        )
+        for chunk in chunks:
+            heading_path = tuple(chunk.metadata.get("heading_path", []))
+            scope = self._resolve_geo_scope(heading_path, geo_overrides, default_scope)
+            chunk.metadata.update(
+                {
+                    "doc_type": document.doc_type,
+                    "version": document.version,
+                    "effective_date": document.effective_date.isoformat()
+                    if document.effective_date
+                    else None,
+                    "is_latest": document.is_latest,
+                    "applicable_regions": scope.model_dump() if scope else None,
+                }
+            )
+
+    @staticmethod
+    def _resolve_geo_scope(
+        heading_path: tuple[str, ...],
+        overrides: dict[tuple[str, ...], GeographicScope],
+        default: GeographicScope | None,
+    ) -> GeographicScope | None:
+        best_key: tuple[str, ...] | None = None
+        for key in overrides:
+            if heading_path[: len(key)] == key and (best_key is None or len(key) > len(best_key)):
+                best_key = key
+        return overrides[best_key] if best_key is not None else default
