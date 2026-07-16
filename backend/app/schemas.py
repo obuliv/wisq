@@ -30,7 +30,9 @@ class ChatRequest(BaseModel):
 
 
 class SourceOut(BaseModel):
+    id: str
     doc_id: str
+    document_title: str | None = None
     locator: str | None = None
     text: str
     score: float

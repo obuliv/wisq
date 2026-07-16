@@ -19,7 +19,13 @@ export interface ChatMessageOut {
   id: string;
   role: "user" | "assistant";
   content: string;
-  sources: Array<{ doc_id: string; locator: string | null; text: string; score: number }> | null;
+  sources: Array<{
+    doc_id: string;
+    document_title: string | null;
+    locator: string | null;
+    text: string;
+    score: number;
+  }> | null;
   created_at: string;
 }
 

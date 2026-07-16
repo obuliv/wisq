@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Protocol
+from uuid import uuid4
 
 from app.ingestion.loaders.base import Element
 
@@ -10,6 +11,9 @@ class Chunk:
     text: str
     locator: str | None = None
     metadata: dict = field(default_factory=dict)
+    # Stable per-chunk id: doubles as the Qdrant point id and the dedup key when
+    # merging ScoredChunks retrieved via multiple search_documents tool calls.
+    id: str = field(default_factory=lambda: str(uuid4()))
 
 
 class Chunker(Protocol):

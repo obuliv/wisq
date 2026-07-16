@@ -34,3 +34,10 @@ def extract_json(
     except (ValidationError, ValueError) as exc:
         logger.warning("Failed to parse/validate LLM JSON response: %s", exc)
         return None
+    except Exception:
+        # Broader than parse/validation failures on purpose: a real provider can
+        # fail in ways FakeLLMClient never could (auth error, rate limit, timeout,
+        # network error). This helper's contract (see docstring) is "never raise" --
+        # keep that true regardless of which LLMClient is wired in.
+        logger.exception("LLM call failed during JSON extraction")
+        return None

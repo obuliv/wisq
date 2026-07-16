@@ -9,7 +9,7 @@ from app.ingestion.loaders.base import Element, get_loader
 from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope
 from app.ingestion.relationships import SectionAnnotationExtractor, extract_and_store_relationships
 from app.ingestion.versioning import resolve_latest
-from app.rag.interfaces import EmbeddedChunk, Embedder, VectorStore
+from app.rag.interfaces import EmbeddedChunk, Embedder, SparseEmbedder, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,14 @@ class IngestionPipeline:
         vector_store: VectorStore,
         metadata_extractor: DocumentMetadataExtractor,
         relationship_extractor: SectionAnnotationExtractor,
+        sparse_embedder: SparseEmbedder | None = None,
     ) -> None:
         self._chunker = chunker
         self._embedder = embedder
         self._vector_store = vector_store
         self._metadata_extractor = metadata_extractor
         self._relationship_extractor = relationship_extractor
+        self._sparse_embedder = sparse_embedder
 
     async def run(self, db: AsyncSession, doc_id: str, file_path: Path) -> None:
         document = await db.get(Document, doc_id)
@@ -62,8 +64,14 @@ class IngestionPipeline:
             self._enrich_chunk_metadata(chunks, document, geo_overrides)
 
             vectors = self._embedder.embed([c.text for c in chunks])
+            sparse_vectors = (
+                self._sparse_embedder.embed([c.text for c in chunks])
+                if self._sparse_embedder is not None
+                else [None] * len(chunks)
+            )
             embedded = [
-                EmbeddedChunk(chunk=c, vector=v) for c, v in zip(chunks, vectors, strict=True)
+                EmbeddedChunk(chunk=c, vector=v, sparse_vector=sv)
+                for c, v, sv in zip(chunks, vectors, sparse_vectors, strict=True)
             ]
             self._vector_store.upsert(doc_id, embedded)
 
@@ -91,7 +99,14 @@ class IngestionPipeline:
 
     async def _resolve_version(self, db: AsyncSession, document: Document) -> None:
         try:
-            await resolve_latest(db, document)
+            changed_siblings = await resolve_latest(db, document)
+            for sibling in changed_siblings:
+                # sibling's chunks were already embedded/indexed under the old
+                # is_latest value -- that's a metadata snapshot, not a live view
+                # of the Document row, so it needs an explicit patch or it stays
+                # stale forever (search_documents' is_latest filter would keep
+                # matching a superseded document's chunks otherwise).
+                self._vector_store.update_metadata(sibling.id, {"is_latest": sibling.is_latest})
         except Exception:
             logger.exception("Version resolution failed for document %s", document.id)
 
@@ -122,11 +137,21 @@ class IngestionPipeline:
                 {
                     "doc_type": document.doc_type,
                     "version": document.version,
+                    # Human-readable name for citations -- once an answer can cite
+                    # chunks from more than one document (see get_related_documents),
+                    # a bare doc_id UUID isn't enough to tell them apart in the UI.
+                    "document_title": document.title or document.filename,
                     "effective_date": document.effective_date.isoformat()
                     if document.effective_date
                     else None,
                     "is_latest": document.is_latest,
                     "applicable_regions": scope.model_dump() if scope else None,
+                    # Flat lists alongside the nested applicable_regions dict above --
+                    # the any/not_any/any_or_empty Filters predicates (rag/fakes.py)
+                    # need list-shaped payload fields to query, since the nested dict
+                    # form can't be targeted by the generic exact-match/range engine.
+                    "regions_included": scope.included if scope else [],
+                    "regions_excluded": scope.excluded if scope else [],
                 }
             )
 

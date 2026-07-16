@@ -9,6 +9,7 @@ from app.ingestion.chunking import SectionAwareChunker
 from app.ingestion.metadata import CompositeMetadataExtractor
 from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.relationships import SectionAnnotationExtractor
+from app.llm.fakes import FakeLLMClient
 from app.llm.interfaces import Message
 from app.rag.fakes import FakeEmbedder, InMemoryVectorStore
 
@@ -125,3 +126,74 @@ async def test_pipeline_applies_relationship_and_geo_override_end_to_end(tmp_pat
 
     precedence_chunk = all_chunks[("Conflicts and Precedence",)]
     assert precedence_chunk.metadata["applicable_regions"] is None
+
+
+def _make_simple_docx(path, text: str) -> None:
+    # A short/plain paragraph gets misclassified by `unstructured` as a bare
+    # "Title" with nothing under it (sometimes even a short *body* paragraph
+    # gets classified as a second Title), which SectionAwareChunker correctly
+    # drops as content-free (see test_chunking.py) -- use a real multi-sentence
+    # narrative paragraph so it's reliably classified as body text and actually
+    # gets chunked/embedded.
+    document = docx.Document()
+    document.add_paragraph("Regression Versioning Handbook", style="Title")
+    document.add_paragraph(text)
+    document.save(str(path))
+
+
+async def test_superseded_document_chunks_get_is_latest_patched(tmp_path):
+    # Regression test for a real bug found in end-to-end testing: a document's
+    # chunks are embedded with a snapshot of is_latest at THEIR OWN ingestion
+    # time. If an older document is ingested before a newer version of the same
+    # title exists, its chunks are stamped is_latest=True and -- without the fix
+    # in IngestionPipeline._resolve_version -- stay that way forever, even after
+    # the newer version arrives and the Document row itself is correctly flipped.
+    v1_path = tmp_path / "Regression Versioning Handbook - version 1.docx"
+    v2_path = tmp_path / "Regression Versioning Handbook - version 2.docx"
+    _make_simple_docx(
+        v1_path,
+        "This is the first version of the handbook policy. It describes the "
+        "standard rules that apply to all employees across the organization.",
+    )
+    _make_simple_docx(
+        v2_path,
+        "This is the second version of the handbook policy. It describes the "
+        "updated rules that apply to all employees across the organization.",
+    )
+
+    vector_store = InMemoryVectorStore()
+    llm = FakeLLMClient()
+    pipeline = IngestionPipeline(
+        chunker=SectionAwareChunker(),
+        embedder=FakeEmbedder(),
+        vector_store=vector_store,
+        metadata_extractor=CompositeMetadataExtractor(llm_client=llm),
+        relationship_extractor=SectionAnnotationExtractor(llm_client=llm),
+    )
+    content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    async with async_session_factory() as db:
+        doc_v1 = Document(filename=v1_path.name, content_type=content_type, storage_path=str(v1_path))
+        db.add(doc_v1)
+        await db.commit()
+        await db.refresh(doc_v1)
+        await pipeline.run(db, doc_v1.id, v1_path)
+        await db.refresh(doc_v1)
+        assert doc_v1.is_latest is True
+
+        doc_v2 = Document(filename=v2_path.name, content_type=content_type, storage_path=str(v2_path))
+        db.add(doc_v2)
+        await db.commit()
+        await db.refresh(doc_v2)
+        await pipeline.run(db, doc_v2.id, v2_path)
+        await db.refresh(doc_v2)
+
+        await db.refresh(doc_v1)
+        assert doc_v1.is_latest is False  # DB row correctly flipped (already worked before the fix)
+
+        v1_doc_id = doc_v1.id
+
+    query_vector = FakeEmbedder().embed(["handbook policy"])[0]
+    v1_chunks = [s for s in vector_store.search(query_vector, top_k=10) if s.chunk.doc_id == v1_doc_id]
+    assert v1_chunks
+    assert all(c.chunk.metadata["is_latest"] is False for c in v1_chunks)

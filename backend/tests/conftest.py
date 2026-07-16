@@ -4,6 +4,13 @@ import tempfile
 _tmp_dir = tempfile.mkdtemp(prefix="wisq-test-")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp_dir}/test.db"
 os.environ["UPLOAD_DIR"] = f"{_tmp_dir}/uploads"
+# Force the fake LLM/embedder regardless of a developer's .env (e.g.
+# LLM_PROVIDER=openai/EMBEDDING_PROVIDER=openai for local manual testing) --
+# the suite must stay hermetic: no network calls, no API costs, no flakiness
+# from a real provider.
+os.environ["LLM_PROVIDER"] = "fake"
+os.environ["EMBEDDING_PROVIDER"] = "fake"
+os.environ["SPARSE_EMBEDDING_PROVIDER"] = "fake"
 
 import asyncio  # noqa: E402
 

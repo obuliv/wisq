@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.ingestion.llm_extraction import extract_json
 from app.ingestion.loaders.base import Element
@@ -33,9 +33,37 @@ def normalize_title(title: str) -> str:
     return _EXTRA_SPACE_RE.sub(" ", cleaned).strip()
 
 
+_UNRESTRICTED_SENTINELS = {
+    "worldwide",
+    "global",
+    "globally",
+    "all",
+    "all locations",
+    "all countries",
+    "all regions",
+    "everywhere",
+    "any location",
+    "any country",
+}
+
+
 class GeographicScope(BaseModel):
     included: list[str] = []
     excluded: list[str] = []
+
+    @field_validator("included")
+    @classmethod
+    def _normalize_unrestricted(cls, value: list[str]) -> list[str]:
+        # An LLM naturally writes a sentinel like "worldwide"/"global" to mean
+        # "no geographic restriction" -- but the any_or_empty filter predicate
+        # (rag/fakes.py) requires an EMPTY list for that meaning, not a literal
+        # string with no overlap against a specific query region (e.g.
+        # geography="Singapore" would otherwise wrongly exclude a chunk tagged
+        # regions_included=["worldwide"]). Collapse the whole list to [] if any
+        # entry matches a recognized sentinel.
+        if any(v.strip().lower() in _UNRESTRICTED_SENTINELS for v in value):
+            return []
+        return value
 
 
 @dataclass
@@ -95,7 +123,9 @@ _METADATA_SYSTEM_PROMPT = (
     '"applicable_regions": {"included": [string], "excluded": [string]}|null}. '
     "Use null for anything not clearly stated in the text. Only set "
     "applicable_regions if the document explicitly states which regions/countries "
-    "it applies to."
+    "it applies to. If the document applies with no geographic restriction "
+    "(e.g. worldwide, globally, all locations), set \"included\" to an empty "
+    "list [] -- do NOT use a word like \"worldwide\" or \"global\" as an entry."
 )
 
 

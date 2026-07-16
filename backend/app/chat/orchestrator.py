@@ -3,24 +3,32 @@ from collections.abc import AsyncIterator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.search_agent import SearchAgent
 from app.db.models import ChatMessage
-from app.llm.interfaces import LLMClient, Message
-from app.rag.interfaces import Filters, Retriever, ScoredChunk
+from app.llm.interfaces import Message
+from app.rag.interfaces import Filters, ScoredChunk
 
 _SYSTEM_PROMPT = (
     "You are a helpful assistant answering questions using only the provided context. "
-    "If the context doesn't contain the answer, say you don't know."
+    "Use the search_documents tool to find relevant passages before answering -- call "
+    "it more than once with different filters (e.g. a specific geography/year first, "
+    "then broader) if the first search doesn't have the answer. A second tool, "
+    "get_related_documents, looks up other documents connected to one you've already "
+    "found (by the doc_id shown in a search_documents result) -- including cross-document "
+    "precedence/conflict rules and older/newer versions of the same document. Call it when "
+    "a passage mentions another document by name, states a rule about which document "
+    "governs a topic, or you're unsure whether the passage you're citing is the current "
+    "version. If the documents don't contain the answer, say you don't know."
 )
 
 
 class ChatOrchestrator:
-    """Wires Retriever (RAG) + LLMClient together for a single chat turn and persists
-    the exchange. Prompt construction here is intentionally minimal -- the LLM
-    deep-dive owns prompt engineering, history truncation, etc."""
+    """Wires SearchAgent (LLM-driven retrieval) + persistence together for a
+    single chat turn. Prompt construction here is intentionally minimal -- the
+    LLM deep-dive owns prompt engineering, history truncation, etc."""
 
-    def __init__(self, retriever: Retriever, llm_client: LLMClient) -> None:
-        self._retriever = retriever
-        self._llm_client = llm_client
+    def __init__(self, search_agent: SearchAgent) -> None:
+        self._search_agent = search_agent
 
     async def answer(
         self,
@@ -31,13 +39,18 @@ class ChatOrchestrator:
         filters: Filters | None = None,
     ) -> AsyncIterator[str]:
         history = await self._load_history(db, session_id)
-        sources = self._retriever.retrieve(user_message, top_k=top_k, filters=filters)
-        messages = self._build_messages(history, sources, user_message)
+        messages = [
+            Message(role="system", content=_SYSTEM_PROMPT),
+            *history,
+            Message(role="user", content=user_message),
+        ]
 
         db.add(ChatMessage(session_id=session_id, role="user", content=user_message))
 
+        result = await self._search_agent.run(messages, top_k=top_k, filters=filters, db=db)
+
         chunks: list[str] = []
-        for delta in self._llm_client.generate(messages, stream=True):
+        for delta in self._chunk_words(result.final_text):
             chunks.append(delta)
             yield delta
 
@@ -46,7 +59,7 @@ class ChatOrchestrator:
                 session_id=session_id,
                 role="assistant",
                 content="".join(chunks),
-                sources=[self._source_payload(s) for s in sources],
+                sources=[self._source_payload(s) for s in result.sources],
             )
         )
         await db.commit()
@@ -59,17 +72,24 @@ class ChatOrchestrator:
         )
         return [Message(role=m.role, content=m.content) for m in result.scalars().all()]
 
-    def _build_messages(
-        self, history: list[Message], sources: list[ScoredChunk], user_message: str
-    ) -> list[Message]:
-        context = "\n\n".join(f"- {s.chunk.text}" for s in sources) or "(no matching context found)"
-        system = Message(role="system", content=f"{_SYSTEM_PROMPT}\n\nContext:\n{context}")
-        return [system, *history, Message(role="user", content=user_message)]
+    @staticmethod
+    def _chunk_words(text: str) -> list[str]:
+        # SearchAgent.run materializes the full answer (see its docstring/design
+        # notes on the streaming-vs-tool-calls tradeoff) -- word-chunk it here so
+        # the SSE contract (token-by-token) is unchanged for callers. TODO: once a
+        # real streaming provider is wired in, revisit whether a true incremental
+        # stream is worth a second generation call for turns with no tool calls.
+        if not text:
+            return []
+        words = text.split(" ")
+        return [word + (" " if i < len(words) - 1 else "") for i, word in enumerate(words)]
 
     @staticmethod
     def _source_payload(scored: ScoredChunk) -> dict:
         return {
+            "id": scored.chunk.id,
             "doc_id": scored.chunk.doc_id,
+            "document_title": scored.chunk.metadata.get("document_title"),
             "locator": scored.chunk.locator,
             "text": scored.chunk.text,
             "score": scored.score,

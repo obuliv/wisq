@@ -50,7 +50,8 @@ export function ChatWindow() {
                 <ul>
                   {m.sources.map((s, i) => (
                     <li key={i}>
-                      <em>{s.locator ?? s.doc_id}</em>: {s.text}
+                      <em>{s.document_title ?? s.doc_id}</em>
+                      {s.locator ? ` (${s.locator})` : ""}: {s.text}
                     </li>
                   ))}
                 </ul>

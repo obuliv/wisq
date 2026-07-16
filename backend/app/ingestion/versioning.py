@@ -23,16 +23,24 @@ def _sort_key(document: Document) -> tuple:
     return (parsed is not None, parsed or (), document.created_at)
 
 
-async def resolve_latest(db: AsyncSession, document: Document) -> None:
+async def resolve_latest(db: AsyncSession, document: Document) -> list[Document]:
     """Groups `document` with any prior uploads sharing the same normalized title,
     marks the newest as `is_latest=True` and flips the rest to False -- handles
     out-of-order uploads (an older version uploaded after a newer one is already
     marked non-latest on arrival). Records a `supersedes` DocumentRelationship
-    when this upload displaces a previous latest version, as an audit trail."""
+    when this upload displaces a previous latest version, as an audit trail.
+
+    Returns the siblings whose `is_latest` value actually changed as a result
+    (never includes `document` itself, since its chunks don't exist in the
+    vector store yet at this point in the pipeline) -- callers use this to patch
+    those siblings' already-indexed chunks' stale `is_latest` metadata (see
+    IngestionPipeline._resolve_version), since chunk metadata is a snapshot
+    taken at embedding time, not a live view of the Document row.
+    """
     if not document.title:
         # No canonical title extracted -- nothing to group against; leave the
         # default is_latest=True from the column default in place.
-        return
+        return []
 
     document.document_group_key = normalize_title(document.title)
 
@@ -45,10 +53,11 @@ async def resolve_latest(db: AsyncSession, document: Document) -> None:
     siblings = list(result.scalars().all())
     if not siblings:
         document.is_latest = True
-        return
+        return []
 
     candidates = [*siblings, document]
     newest = max(candidates, key=_sort_key)
+    changed_siblings = [s for s in siblings if s.is_latest != (s is newest)]
     for candidate in candidates:
         candidate.is_latest = candidate is newest
 
@@ -66,3 +75,5 @@ async def resolve_latest(db: AsyncSession, document: Document) -> None:
                 ),
             )
         )
+
+    return changed_siblings

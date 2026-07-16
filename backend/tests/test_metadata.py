@@ -1,6 +1,6 @@
 import pytest
 
-from app.ingestion.metadata import FilenameMetadataExtractor, normalize_title
+from app.ingestion.metadata import FilenameMetadataExtractor, GeographicScope, normalize_title
 
 
 @pytest.mark.parametrize(
@@ -23,3 +23,19 @@ def test_normalize_title_ignores_case_and_punctuation():
     assert normalize_title("Acme, Global Employee Handbook") == normalize_title(
         "acme global employee handbook"
     )
+
+
+@pytest.mark.parametrize("sentinel", ["Worldwide", "  Global  ", "GLOBALLY", "all locations"])
+def test_geographic_scope_normalizes_unrestricted_sentinels_to_empty(sentinel):
+    # Regression test: an LLM naturally writes a sentinel like "worldwide" to
+    # mean "no restriction," but the any_or_empty filter predicate requires an
+    # empty list for that meaning -- a literal sentinel string silently fails to
+    # match any specific geography query instead.
+    scope = GeographicScope(included=[sentinel], excluded=[])
+    assert scope.included == []
+
+
+def test_geographic_scope_leaves_real_region_names_unchanged():
+    scope = GeographicScope(included=["Singapore", "Japan"], excluded=["Malaysia"])
+    assert scope.included == ["Singapore", "Japan"]
+    assert scope.excluded == ["Malaysia"]
