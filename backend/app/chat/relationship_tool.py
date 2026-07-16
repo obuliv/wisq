@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.formatting import format_document_scope
 from app.db.models import Document, DocumentRelationship
 from app.llm.interfaces import ToolDefinition
 from app.rag.interfaces import Retriever, ScoredChunk
@@ -96,10 +97,12 @@ async def load_related_context(
 
 
 def _format_chunks(chunks: list[ScoredChunk], tag: str) -> str:
-    blocks = []
+    if not chunks:
+        return ""
+    blocks = [format_document_scope(chunks[0].chunk.doc_id, chunks[0].chunk.metadata)]
     for s in chunks:
         heading = " > ".join(s.chunk.metadata.get("heading_path", [])) or None
-        header = f"[{tag} doc_id={s.chunk.doc_id} locator={s.chunk.locator} heading={heading}]"
+        header = f"[{tag} locator={s.chunk.locator} heading={heading}]"
         blocks.append(f"{header}\n{s.chunk.text}")
     return "\n\n".join(blocks)
 

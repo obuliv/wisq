@@ -1,6 +1,11 @@
 import pytest
 
-from app.ingestion.metadata import FilenameMetadataExtractor, GeographicScope, normalize_title
+from app.ingestion.metadata import (
+    FilenameMetadataExtractor,
+    GeographicScope,
+    PersonnelScope,
+    normalize_title,
+)
 
 
 @pytest.mark.parametrize(
@@ -39,3 +44,17 @@ def test_geographic_scope_leaves_real_region_names_unchanged():
     scope = GeographicScope(included=["Singapore", "Japan"], excluded=["Malaysia"])
     assert scope.included == ["Singapore", "Japan"]
     assert scope.excluded == ["Malaysia"]
+
+
+@pytest.mark.parametrize("sentinel", ["Everyone", "  All Personnel  ", "ALL STAFF"])
+def test_personnel_scope_normalizes_unrestricted_sentinels_to_empty(sentinel):
+    scope = PersonnelScope(included=[sentinel], excluded=[])
+    assert scope.included == []
+
+
+def test_personnel_scope_leaves_real_personnel_categories_unchanged():
+    # This is the exact scenario from the APAC handbook: applies to employees,
+    # explicitly excludes contractors.
+    scope = PersonnelScope(included=["employees"], excluded=["contractors"])
+    assert scope.included == ["employees"]
+    assert scope.excluded == ["contractors"]

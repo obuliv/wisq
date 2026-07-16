@@ -1,3 +1,4 @@
+from app.chat.formatting import format_document_scope
 from app.llm.interfaces import ToolDefinition
 from app.rag.interfaces import Filters, ScoredChunk
 
@@ -72,11 +73,30 @@ def build_search_filters(arguments: dict) -> Filters:
 
 
 def format_search_results(scored: list[ScoredChunk]) -> str:
+    """Groups matching chunks by document and prepends each document's
+    structured scope (regions/personnel/doc_type/is_latest) once per document,
+    via format_document_scope -- so the model sees whether a retrieved
+    document actually covers the situation asked about directly in the tool
+    result, rather than having to infer it from whichever prose chunk
+    happened to rank highly."""
     if not scored:
         return "No matching passages found."
-    blocks = []
+
+    by_doc: dict[str, list[ScoredChunk]] = {}
+    order: list[str] = []
     for s in scored:
-        heading = " > ".join(s.chunk.metadata.get("heading_path", [])) or None
-        header = f"[doc_id={s.chunk.doc_id} locator={s.chunk.locator} heading={heading}]"
-        blocks.append(f"{header}\n{s.chunk.text}")
-    return "\n\n".join(blocks)
+        if s.chunk.doc_id not in by_doc:
+            by_doc[s.chunk.doc_id] = []
+            order.append(s.chunk.doc_id)
+        by_doc[s.chunk.doc_id].append(s)
+
+    blocks = []
+    for doc_id in order:
+        chunks = by_doc[doc_id]
+        scope_line = format_document_scope(doc_id, chunks[0].chunk.metadata)
+        chunk_blocks = []
+        for s in chunks:
+            heading = " > ".join(s.chunk.metadata.get("heading_path", [])) or None
+            chunk_blocks.append(f"(locator={s.chunk.locator} heading={heading})\n{s.chunk.text}")
+        blocks.append(scope_line + "\n" + "\n\n".join(chunk_blocks))
+    return "\n\n---\n\n".join(blocks)

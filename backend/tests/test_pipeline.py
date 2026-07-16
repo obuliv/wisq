@@ -128,6 +128,56 @@ async def test_pipeline_applies_relationship_and_geo_override_end_to_end(tmp_pat
     assert precedence_chunk.metadata["applicable_regions"] is None
 
 
+PERSONNEL_METADATA_JSON = (
+    '{"doc_type": null, "title": null, "effective_date": null, '
+    '"applicable_regions": null, '
+    '"applicable_personnel": {"included": ["employees"], "excluded": ["contractors"]}}'
+)
+
+
+async def test_pipeline_applies_personnel_scope_to_chunk_metadata(tmp_path):
+    docx_path = tmp_path / "Personnel Scope Handbook.docx"
+    document = docx.Document()
+    document.add_paragraph("Personnel Scope Handbook", style="Title")
+    document.add_paragraph(
+        "This handbook applies to employees only. It does not apply to contractors, "
+        "who should refer to their separate contractor agreement instead."
+    )
+    document.save(str(docx_path))
+
+    llm = ScriptedLLMClient({"does not apply to contractors": PERSONNEL_METADATA_JSON})
+    vector_store = InMemoryVectorStore()
+    pipeline = IngestionPipeline(
+        chunker=SectionAwareChunker(),
+        embedder=FakeEmbedder(),
+        vector_store=vector_store,
+        metadata_extractor=CompositeMetadataExtractor(llm_client=llm),
+        relationship_extractor=SectionAnnotationExtractor(llm_client=llm),
+    )
+    content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    async with async_session_factory() as db:
+        document_row = Document(filename=docx_path.name, content_type=content_type, storage_path=str(docx_path))
+        db.add(document_row)
+        await db.commit()
+        await db.refresh(document_row)
+        await pipeline.run(db, document_row.id, docx_path)
+        await db.refresh(document_row)
+
+        assert document_row.status == "ready"
+        assert document_row.applicable_personnel == {
+            "included": ["employees"],
+            "excluded": ["contractors"],
+        }
+        doc_id = document_row.id
+
+    query_vector = FakeEmbedder().embed(["contractors"])[0]
+    chunks = [s for s in vector_store.search(query_vector, top_k=10) if s.chunk.doc_id == doc_id]
+    assert chunks
+    assert all(c.chunk.metadata["personnel_included"] == ["employees"] for c in chunks)
+    assert all(c.chunk.metadata["personnel_excluded"] == ["contractors"] for c in chunks)
+
+
 def _make_simple_docx(path, text: str) -> None:
     # A short/plain paragraph gets misclassified by `unstructured` as a bare
     # "Title" with nothing under it (sometimes even a short *body* paragraph

@@ -43,6 +43,9 @@ class Document(Base):
     effective_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # {"included": [...], "excluded": [...]} -- whole-document default scope.
     applicable_regions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # {"included": [...], "excluded": [...]} -- which personnel categories
+    # (employees, contractors, ...) this document applies to, same shape.
+    applicable_personnel: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Versioning (app/ingestion/versioning.py): documents sharing the same
     # normalized title are grouped, and only the newest is is_latest=True.

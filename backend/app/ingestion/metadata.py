@@ -66,6 +66,40 @@ class GeographicScope(BaseModel):
         return value
 
 
+_UNRESTRICTED_PERSONNEL_SENTINELS = {
+    "everyone",
+    "all",
+    "all personnel",
+    "all staff",
+    "anyone",
+    "any personnel",
+    "employees and contractors",
+    "all employees and contractors",
+}
+
+
+class PersonnelScope(BaseModel):
+    """Which personnel categories (e.g. employees, contractors, full-time,
+    part-time) a document applies to -- same included/excluded shape as
+    GeographicScope, since documents state this the same way ("applies to
+    employees... does NOT apply to contractors"). Exists so this is a
+    structured, queryable fact captured at ingestion time instead of only
+    being recoverable via semantic retrieval of the prose sentence that states
+    it -- vector search over crude fake/real embeddings alike can easily miss
+    the specific SCOPE sentence a question like "are contractors covered?"
+    depends on."""
+
+    included: list[str] = []
+    excluded: list[str] = []
+
+    @field_validator("included")
+    @classmethod
+    def _normalize_unrestricted(cls, value: list[str]) -> list[str]:
+        if any(v.strip().lower() in _UNRESTRICTED_PERSONNEL_SENTINELS for v in value):
+            return []
+        return value
+
+
 @dataclass
 class DocumentMetadata:
     doc_type: str | None = None
@@ -73,6 +107,7 @@ class DocumentMetadata:
     version: str | None = None
     effective_date: date | None = None
     applicable_regions: GeographicScope | None = None
+    applicable_personnel: PersonnelScope | None = None
 
 
 class DocumentMetadataExtractor(Protocol):
@@ -120,12 +155,20 @@ _METADATA_SYSTEM_PROMPT = (
     "Extract document metadata from the start of a policy/handbook document. "
     'Return ONLY a JSON object: {"doc_type": string|null, "title": string|null, '
     '"effective_date": "YYYY-MM-DD"|null, '
-    '"applicable_regions": {"included": [string], "excluded": [string]}|null}. '
+    '"applicable_regions": {"included": [string], "excluded": [string]}|null, '
+    '"applicable_personnel": {"included": [string], "excluded": [string]}|null}. '
     "Use null for anything not clearly stated in the text. Only set "
     "applicable_regions if the document explicitly states which regions/countries "
     "it applies to. If the document applies with no geographic restriction "
     "(e.g. worldwide, globally, all locations), set \"included\" to an empty "
-    "list [] -- do NOT use a word like \"worldwide\" or \"global\" as an entry."
+    "list [] -- do NOT use a word like \"worldwide\" or \"global\" as an entry. "
+    "Only set applicable_personnel if the document explicitly states which "
+    "personnel categories (e.g. employees, contractors, full-time, part-time) "
+    "it applies to or excludes -- e.g. \"applies to employees\" -> "
+    'included=["employees"]; "does NOT apply to contractors" -> '
+    'excluded=["contractors"]. If no personnel restriction is stated, set '
+    '"included" to an empty list [] -- do NOT use a word like "everyone" or '
+    '"all personnel" as an entry.'
 )
 
 
@@ -134,6 +177,7 @@ class _LLMDocumentMetadata(BaseModel):
     title: str | None = None
     effective_date: date | None = None
     applicable_regions: GeographicScope | None = None
+    applicable_personnel: PersonnelScope | None = None
 
 
 class LLMDocumentMetadataExtractor:
@@ -156,6 +200,7 @@ class LLMDocumentMetadataExtractor:
             title=result.title,
             effective_date=result.effective_date,
             applicable_regions=result.applicable_regions,
+            applicable_personnel=result.applicable_personnel,
         )
 
 
@@ -177,4 +222,5 @@ class CompositeMetadataExtractor:
             version=from_filename.version or from_llm.version,
             effective_date=from_filename.effective_date or from_llm.effective_date,
             applicable_regions=from_filename.applicable_regions or from_llm.applicable_regions,
+            applicable_personnel=from_filename.applicable_personnel or from_llm.applicable_personnel,
         )

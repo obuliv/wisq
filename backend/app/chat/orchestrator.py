@@ -18,7 +18,11 @@ _SYSTEM_PROMPT = (
     "precedence/conflict rules and older/newer versions of the same document. Call it when "
     "a passage mentions another document by name, states a rule about which document "
     "governs a topic, or you're unsure whether the passage you're citing is the current "
-    "version. If the documents don't contain the answer, say you don't know."
+    "version. Each search result also states the source document's scope (which regions "
+    "and personnel categories, e.g. employees vs. contractors, it applies to) -- use this "
+    "to judge whether a retrieved document actually covers the situation asked about, and "
+    "search again (different filters, or a different/related document) if it doesn't. If "
+    "the documents don't contain the answer, say you don't know."
 )
 
 

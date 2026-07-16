@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Document, DocumentStatus
 from app.ingestion.chunking import Chunk, Chunker
 from app.ingestion.loaders.base import Element, get_loader
-from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope
+from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope, PersonnelScope
 from app.ingestion.relationships import SectionAnnotationExtractor, extract_and_store_relationships
 from app.ingestion.versioning import resolve_latest
 from app.rag.interfaces import EmbeddedChunk, Embedder, SparseEmbedder, VectorStore
@@ -96,6 +96,8 @@ class IngestionPipeline:
         document.effective_date = metadata.effective_date or document.effective_date
         if metadata.applicable_regions is not None:
             document.applicable_regions = metadata.applicable_regions.model_dump()
+        if metadata.applicable_personnel is not None:
+            document.applicable_personnel = metadata.applicable_personnel.model_dump()
 
     async def _resolve_version(self, db: AsyncSession, document: Document) -> None:
         try:
@@ -130,6 +132,14 @@ class IngestionPipeline:
         default_scope = (
             GeographicScope(**document.applicable_regions) if document.applicable_regions else None
         )
+        # Personnel scope is document-level only (no section-level override
+        # mechanism like geography's -- not something documents tend to narrow
+        # per-section, and keeping this simple matches what was actually asked for).
+        personnel_scope = (
+            PersonnelScope(**document.applicable_personnel)
+            if document.applicable_personnel
+            else None
+        )
         for chunk in chunks:
             heading_path = tuple(chunk.metadata.get("heading_path", []))
             scope = self._resolve_geo_scope(heading_path, geo_overrides, default_scope)
@@ -152,6 +162,9 @@ class IngestionPipeline:
                     # form can't be targeted by the generic exact-match/range engine.
                     "regions_included": scope.included if scope else [],
                     "regions_excluded": scope.excluded if scope else [],
+                    "applicable_personnel": personnel_scope.model_dump() if personnel_scope else None,
+                    "personnel_included": personnel_scope.included if personnel_scope else [],
+                    "personnel_excluded": personnel_scope.excluded if personnel_scope else [],
                 }
             )
 
