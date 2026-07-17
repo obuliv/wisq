@@ -59,4 +59,22 @@ class QdrantVectorStore:
         # point.id (== chunk.id) and payload. Once hybrid search lands, this
         # becomes a Query API call with Prefetch(using="dense")/Prefetch(using="sparse")
         # + FusionQuery(fusion=Fusion.RRF) instead of a single vector search.
+        #
+        # IMPORTANT DIVERGENCE from InMemoryVectorStore (rag/fakes.py): region/
+        # personnel/doc_type values are free text an LLM extracted at ingestion
+        # time (e.g. "People's Republic of China"), which won't always exact-
+        # match what a query later asks for (e.g. "China") -- the in-memory fake
+        # handles this with rapidfuzz fuzzy matching (token_set_ratio) inside
+        # _matches, but Qdrant's native MatchAny/MatchValue are exact-only, no
+        # fuzzy option server-side. A real implementation needs one of:
+        #   (a) canonicalize these strings into a fixed form at ingestion time
+        #       (a small alias/gazetteer table, e.g. "China" -> canonical key),
+        #       so exact MatchAny works because both sides already agree; or
+        #   (b) resolve the query-time term against the distinct values actually
+        #       present in the corpus via fuzzy matching BEFORE constructing the
+        #       Qdrant filter (same pattern as relationships.py's _resolve_target
+        #       resolving a free-text document reference against Document.title
+        #       rows), then pass the resolved canonical value(s) into MatchAny.
+        # Don't just port the in-memory fuzzy-matching loop as-is -- it doesn't
+        # translate to a single Qdrant filter condition.
         raise NotImplementedError

@@ -73,6 +73,61 @@ def test_not_any_vetoes_excluded_region_even_when_included_is_empty():
     assert results == []
 
 
+def test_any_or_empty_fuzzy_matches_formal_region_name():
+    # Regression test for a real bug found via end-to-end testing: ingestion
+    # extracted "People's Republic of China" (the document's own formal name)
+    # while a real query naturally asks for "China" -- an exact-match predicate
+    # silently excludes this chunk even though it's exactly what's being asked
+    # about.
+    store = InMemoryVectorStore()
+    apac_chunk = Chunk(
+        doc_id="doc-1",
+        text="APAC benefits policy",
+        metadata={
+            "regions_included": ["People's Republic of China", "Japan", "Taiwan"],
+            "regions_excluded": [],
+        },
+    )
+    _upsert(store, apac_chunk)
+
+    (query_vector,) = FakeEmbedder().embed(["policy"])
+    results = store.search(
+        query_vector, top_k=5, filters={"regions_included": {"any_or_empty": ["China"]}}
+    )
+
+    assert {r.chunk.id for r in results} == {apac_chunk.id}
+
+
+def test_any_or_empty_fuzzy_match_does_not_over_match_unrelated_regions():
+    store = InMemoryVectorStore()
+    apac_chunk = Chunk(
+        doc_id="doc-1",
+        text="APAC benefits policy",
+        metadata={"regions_included": ["Japan"], "regions_excluded": []},
+    )
+    _upsert(store, apac_chunk)
+
+    (query_vector,) = FakeEmbedder().embed(["policy"])
+    results = store.search(
+        query_vector, top_k=5, filters={"regions_included": {"any_or_empty": ["China"]}}
+    )
+
+    assert results == []
+
+
+def test_doc_type_scalar_filter_fuzzy_matches():
+    store = InMemoryVectorStore()
+    chunk = Chunk(doc_id="doc-1", text="handbook text", metadata={"doc_type": "Acme Employee Handbook"})
+    _upsert(store, chunk)
+
+    (query_vector,) = FakeEmbedder().embed(["handbook"])
+    results = store.search(
+        query_vector, top_k=5, filters={"doc_type": "Employee Handbook"}
+    )
+
+    assert {r.chunk.id for r in results} == {chunk.id}
+
+
 def test_gte_lte_range_filter_unchanged():
     store = InMemoryVectorStore()
     early = Chunk(doc_id="doc-1", text="early doc", metadata={"effective_date": "2024-01-01"})

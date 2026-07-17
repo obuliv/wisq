@@ -1,6 +1,8 @@
 import hashlib
 import math
 
+from rapidfuzz import fuzz
+
 from app.ingestion.chunking import Chunk
 from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.interfaces import EmbeddedChunk, Filters, ScoredChunk, SparseVector, Vector
@@ -8,6 +10,17 @@ from app.rag.interfaces import EmbeddedChunk, Filters, ScoredChunk, SparseVector
 _DIM = 32
 _SPARSE_BUCKETS = 2**16
 _PREFETCH_LIMIT = 50
+
+# Same algorithm/threshold as relationships.py's document-title matching --
+# region/personnel/doc_type values are free text extracted by an LLM at
+# ingestion time (e.g. "People's Republic of China") that won't always exact-
+# match what a query later asks for (e.g. "China"). rapidfuzz.token_set_ratio
+# handles "one string's tokens are a subset of the other's" well (a formal name
+# containing a common name), without over-matching unrelated strings.
+_FUZZY_MATCH_THRESHOLD = 80.0
+# Which plain-scalar fields get fuzzy comparison instead of exact equality --
+# deliberately NOT every string field (doc_id/locator/id must stay exact).
+_FUZZY_SCALAR_FIELDS = {"doc_type"}
 
 
 class FakeEmbedder:
@@ -68,6 +81,14 @@ def _flatten(chunk: Chunk) -> dict:
     return {**chunk.metadata, "doc_id": chunk.doc_id, "id": chunk.id, "locator": chunk.locator}
 
 
+def _fuzzy_in(needle: str, haystack: list[str]) -> bool:
+    return any(fuzz.token_set_ratio(needle.lower(), h.lower()) >= _FUZZY_MATCH_THRESHOLD for h in haystack)
+
+
+def _fuzzy_overlap(values: list[str], expected: list[str]) -> bool:
+    return any(_fuzzy_in(v, expected) for v in values)
+
+
 def _matches(chunk: Chunk, filters: Filters) -> bool:
     payload = _flatten(chunk)
     for field, expected in filters.items():
@@ -79,20 +100,28 @@ def _matches(chunk: Chunk, filters: Filters) -> bool:
                 return False
             if "any" in expected:
                 # List-field overlap -- Qdrant MatchAny. An empty/missing field
-                # never matches (unlike any_or_empty below).
-                if not set(value or []) & set(expected["any"]):
+                # never matches (unlike any_or_empty below). Fuzzy, not exact --
+                # see _FUZZY_MATCH_THRESHOLD.
+                if not _fuzzy_overlap(value or [], expected["any"]):
                     return False
             if "not_any" in expected:
                 # List-field must NOT overlap -- Qdrant MatchAny + must_not.
-                if set(value or []) & set(expected["not_any"]):
+                if _fuzzy_overlap(value or [], expected["not_any"]):
                     return False
             if "any_or_empty" in expected:
                 # Overlaps, OR the field is empty/missing -- e.g. an empty
                 # regions_included list means "applies everywhere", so it
                 # should match any requested geography rather than none.
                 values = value or []
-                if values and not (set(values) & set(expected["any_or_empty"])):
+                if values and not _fuzzy_overlap(values, expected["any_or_empty"]):
                     return False
+        elif (
+            field in _FUZZY_SCALAR_FIELDS
+            and isinstance(expected, str)
+            and isinstance(value, str)
+        ):
+            if fuzz.token_set_ratio(value.lower(), expected.lower()) < _FUZZY_MATCH_THRESHOLD:
+                return False
         elif value != expected:
             return False
     return True
