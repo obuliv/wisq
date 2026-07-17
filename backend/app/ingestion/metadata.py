@@ -1,8 +1,7 @@
 import re
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, field_validator
 
@@ -33,52 +32,43 @@ def normalize_title(title: str) -> str:
     return _EXTRA_SPACE_RE.sub(" ", cleaned).strip()
 
 
-_UNRESTRICTED_SENTINELS = {
-    "worldwide",
-    "global",
-    "globally",
-    "all",
-    "all locations",
-    "all countries",
-    "all regions",
-    "everywhere",
-    "any location",
-    "any country",
-}
+class _IncludedExcludedScope(BaseModel):
+    """Shared included/excluded-list shape for GeographicScope/PersonnelScope:
+    same fields, same "normalize an LLM sentinel word like 'worldwide'/
+    'everyone' to an empty list" validator. Subclasses supply only their own
+    sentinel set -- the any_or_empty filter predicate (rag/fakes.py) requires
+    an EMPTY list to mean "no restriction", not a literal sentinel string with
+    no overlap against a specific query value (e.g. geography="Singapore"
+    would otherwise wrongly exclude a chunk tagged regions_included=["worldwide"])."""
 
-
-class GeographicScope(BaseModel):
     included: list[str] = []
     excluded: list[str] = []
+    _unrestricted_sentinels: ClassVar[set[str]] = set()
 
     @field_validator("included")
     @classmethod
     def _normalize_unrestricted(cls, value: list[str]) -> list[str]:
-        # An LLM naturally writes a sentinel like "worldwide"/"global" to mean
-        # "no geographic restriction" -- but the any_or_empty filter predicate
-        # (rag/fakes.py) requires an EMPTY list for that meaning, not a literal
-        # string with no overlap against a specific query region (e.g.
-        # geography="Singapore" would otherwise wrongly exclude a chunk tagged
-        # regions_included=["worldwide"]). Collapse the whole list to [] if any
-        # entry matches a recognized sentinel.
-        if any(v.strip().lower() in _UNRESTRICTED_SENTINELS for v in value):
+        if any(v.strip().lower() in cls._unrestricted_sentinels for v in value):
             return []
         return value
 
 
-_UNRESTRICTED_PERSONNEL_SENTINELS = {
-    "everyone",
-    "all",
-    "all personnel",
-    "all staff",
-    "anyone",
-    "any personnel",
-    "employees and contractors",
-    "all employees and contractors",
-}
+class GeographicScope(_IncludedExcludedScope):
+    _unrestricted_sentinels: ClassVar[set[str]] = {
+        "worldwide",
+        "global",
+        "globally",
+        "all",
+        "all locations",
+        "all countries",
+        "all regions",
+        "everywhere",
+        "any location",
+        "any country",
+    }
 
 
-class PersonnelScope(BaseModel):
+class PersonnelScope(_IncludedExcludedScope):
     """Which personnel categories (e.g. employees, contractors, full-time,
     part-time) a document applies to -- same included/excluded shape as
     GeographicScope, since documents state this the same way ("applies to
@@ -89,21 +79,23 @@ class PersonnelScope(BaseModel):
     the specific SCOPE sentence a question like "are contractors covered?"
     depends on."""
 
-    included: list[str] = []
-    excluded: list[str] = []
+    _unrestricted_sentinels: ClassVar[set[str]] = {
+        "everyone",
+        "all",
+        "all personnel",
+        "all staff",
+        "anyone",
+        "any personnel",
+        "employees and contractors",
+        "all employees and contractors",
+    }
 
-    @field_validator("included")
-    @classmethod
-    def _normalize_unrestricted(cls, value: list[str]) -> list[str]:
-        if any(v.strip().lower() in _UNRESTRICTED_PERSONNEL_SENTINELS for v in value):
-            return []
-        return value
 
-
-@dataclass
-class DocumentMetadata:
+class DocumentMetadata(BaseModel):
     doc_type: str | None = None
     title: str | None = None
+    # Filename-only in practice: _METADATA_SYSTEM_PROMPT never asks the LLM
+    # for this key, so it always comes from FilenameMetadataExtractor.
     version: str | None = None
     effective_date: date | None = None
     applicable_regions: GeographicScope | None = None
@@ -172,19 +164,14 @@ _METADATA_SYSTEM_PROMPT = (
 )
 
 
-class _LLMDocumentMetadata(BaseModel):
-    doc_type: str | None = None
-    title: str | None = None
-    effective_date: date | None = None
-    applicable_regions: GeographicScope | None = None
-    applicable_personnel: PersonnelScope | None = None
-
-
 class LLMDocumentMetadataExtractor:
     """Fills in fields the filename can't provide (effective_date,
     applicable_regions) via one LLM call over the document's opening elements.
     Degrades to an empty DocumentMetadata (never raises) if the LLM response
-    isn't valid JSON -- e.g. the current FakeLLMClient."""
+    isn't valid JSON -- e.g. the current FakeLLMClient. DocumentMetadata itself
+    is the response schema here (it satisfies extract_json's `bound=BaseModel`
+    requirement directly) -- the LLM prompt never requests "version", so that
+    field simply stays None on whatever this returns."""
 
     def __init__(self, llm_client: LLMClient, max_elements: int = 20) -> None:
         self._llm_client = llm_client
@@ -192,16 +179,8 @@ class LLMDocumentMetadataExtractor:
 
     def extract(self, filename: str, elements: list[Element]) -> DocumentMetadata:
         intro = "\n".join(el.text for el in elements[: self._max_elements])
-        result = extract_json(self._llm_client, _METADATA_SYSTEM_PROMPT, intro, _LLMDocumentMetadata)
-        if result is None:
-            return DocumentMetadata()
-        return DocumentMetadata(
-            doc_type=result.doc_type,
-            title=result.title,
-            effective_date=result.effective_date,
-            applicable_regions=result.applicable_regions,
-            applicable_personnel=result.applicable_personnel,
-        )
+        result = extract_json(self._llm_client, _METADATA_SYSTEM_PROMPT, intro, DocumentMetadata)
+        return result if result is not None else DocumentMetadata()
 
 
 class CompositeMetadataExtractor:
@@ -216,11 +195,8 @@ class CompositeMetadataExtractor:
     def extract(self, filename: str, elements: list[Element]) -> DocumentMetadata:
         from_filename = self._filename_extractor.extract(filename, elements)
         from_llm = self._llm_extractor.extract(filename, elements)
-        return DocumentMetadata(
-            doc_type=from_filename.doc_type or from_llm.doc_type,
-            title=from_filename.title or from_llm.title,
-            version=from_filename.version or from_llm.version,
-            effective_date=from_filename.effective_date or from_llm.effective_date,
-            applicable_regions=from_filename.applicable_regions or from_llm.applicable_regions,
-            applicable_personnel=from_filename.applicable_personnel or from_llm.applicable_personnel,
-        )
+        merged = {
+            name: getattr(from_filename, name) or getattr(from_llm, name)
+            for name in DocumentMetadata.model_fields
+        }
+        return DocumentMetadata(**merged)

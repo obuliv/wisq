@@ -1,3 +1,9 @@
+// Keep in sync with backend/app/schemas.py:DocumentOut
+export interface IncludedExcludedScope {
+  included: string[];
+  excluded: string[];
+}
+
 export interface DocumentOut {
   id: string;
   filename: string;
@@ -8,8 +14,8 @@ export interface DocumentOut {
   title: string | null;
   version: string | null;
   effective_date: string | null;
-  applicable_regions: { included: string[]; excluded: string[] } | null;
-  applicable_personnel: { included: string[]; excluded: string[] } | null;
+  applicable_regions: IncludedExcludedScope | null;
+  applicable_personnel: IncludedExcludedScope | null;
   default_precedence_rule: string | null;
   is_latest: boolean;
   doc_metadata: Record<string, unknown> | null;
@@ -31,23 +37,28 @@ export interface ChatMessageOut {
   created_at: string;
 }
 
+async function errorMessage(response: Response): Promise<string> {
+  const text = await response.text();
+  return text || `Request failed (${response.status} ${response.statusText})`;
+}
+
 export async function uploadDocument(file: File): Promise<DocumentOut> {
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetch("/api/documents", { method: "POST", body: formData });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
 
 export async function listDocuments(): Promise<DocumentOut[]> {
   const response = await fetch("/api/documents");
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
 
 export async function listMessages(sessionId: string): Promise<ChatMessageOut[]> {
   const response = await fetch(`/api/chat/sessions/${sessionId}/messages`);
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
 
@@ -69,7 +80,7 @@ export async function streamChat(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, message }),
   });
-  if (!response.ok || !response.body) throw new Error(await response.text());
+  if (!response.ok || !response.body) throw new Error(await errorMessage(response));
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

@@ -18,6 +18,25 @@ def test_year_drops_the_latest_only_default():
     assert filters["effective_date"] == {"gte": "2025-01-01", "lte": "2025-12-31"}
 
 
+def test_broad_continent_level_geography_is_not_applied_as_a_filter():
+    # Regression test: the model sometimes ignores the tool description telling
+    # it to omit continent-level terms like "Asia" and passes them anyway. A
+    # continent name fuzzy-matches poorly against the specific country lists
+    # documents are actually scoped by (e.g. APAC's ["China", "Japan",
+    # "Taiwan"]), so applying it as a hard filter silently excludes every
+    # country-specific document -- dropping the filter server-side (instead of
+    # trusting the model) keeps those documents visible.
+    filters = build_search_filters({"query": "gym benefits", "geography": "Asia"})
+    assert "regions_included" not in filters
+    assert "regions_excluded" not in filters
+
+
+def test_specific_country_geography_still_applies_as_a_filter():
+    filters = build_search_filters({"query": "gym benefits", "geography": "Taiwan"})
+    assert filters["regions_included"] == {"any_or_empty": ["Taiwan"]}
+    assert filters["regions_excluded"] == {"not_any": ["Taiwan"]}
+
+
 def test_year_combines_with_other_filters():
     filters = build_search_filters(
         {"query": "PTO policy", "year": 2025, "geography": "Singapore", "doc_type": "Employee Handbook"}

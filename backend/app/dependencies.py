@@ -99,7 +99,11 @@ def get_llm_client() -> LLMClient:
     if settings.llm_provider == "openai":
         if not settings.openai_api_key:
             raise RuntimeError("LLM_PROVIDER=openai requires OPENAI_API_KEY to be set")
-        return OpenAIClient(api_key=settings.openai_api_key, model=settings.openai_model)
+        return OpenAIClient(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            reasoning_effort=settings.openai_reasoning_effort,
+        )
     if settings.llm_provider == "anthropic":
         raise NotImplementedError(
             "LLM_PROVIDER=anthropic is not implemented yet -- add app/llm/anthropic_client.py "
