@@ -211,6 +211,122 @@ async def test_related_documents_tool_pulls_in_connected_document_and_merges_sou
     assert any("takes precedence" in content for content in tool_results)
 
 
+async def test_search_documents_auto_expands_related_document_without_second_tool_call():
+    # Regression test for the "gym benefits for Taiwan" reliability gap: relying
+    # on the model to notice the related_documents hint and *choose* to call
+    # get_related_documents was only correct ~50% of the time in live testing.
+    # Now search_documents itself auto-fetches connected-document content in
+    # the SAME tool result whenever a retrieved chunk's related_documents hint
+    # names a non-supersedes relationship, so a single search_documents call
+    # (no get_related_documents call at all) already carries both figures.
+    regional_chunk = Chunk(
+        doc_id="doc-regional-auto",
+        text="Gym reimbursement is $30/month.",
+        metadata={
+            "is_latest": True,
+            "related_documents": [
+                {"relation_type": "reference", "topic": "other benefits", "target": "Global Employee Handbook"}
+            ],
+        },
+    )
+    global_chunk = Chunk(
+        doc_id="doc-global-auto",
+        text="Gym reimbursement is $50/month.",
+        metadata={"is_latest": True},
+    )
+    retriever = _make_retriever_with_chunks(regional_chunk, global_chunk)
+
+    scripted = ScriptedToolLLMClient(
+        [
+            GenerationResult(
+                tool_calls=[
+                    ToolCall(id="1", name="search_documents", arguments={"query": "gym benefits Taiwan"})
+                ]
+            ),
+            GenerationResult(text="The global handbook's $50 figure applies."),
+        ]
+    )
+
+    async with async_session_factory() as db:
+        db.add(Document(id="doc-regional-auto", filename="regional.docx", content_type="x", storage_path="x", title="APAC Benefits Handbook"))
+        db.add(Document(id="doc-global-auto", filename="global.docx", content_type="x", storage_path="x", title="Global Employee Handbook"))
+        db.add(
+            DocumentRelationship(
+                source_doc_id="doc-regional-auto",
+                target_doc_id="doc-global-auto",
+                target_doc_ref="Global Employee Handbook",
+                relation_type="reference",
+                topic="other benefits",
+                source_text="for all other benefits, refer to the global handbook",
+            )
+        )
+        await db.commit()
+
+        agent = SearchAgent(retriever=retriever, llm_client=scripted)
+        result = await agent.run(
+            [Message(role="user", content="What is the gym benefit for a Taiwanese employee?")], db=db
+        )
+
+    assert result.final_text == "The global handbook's $50 figure applies."
+    source_doc_ids = {s.chunk.doc_id for s in result.sources}
+    assert source_doc_ids == {"doc-regional-auto", "doc-global-auto"}
+
+    # Only one search_documents call was scripted -- no get_related_documents
+    # round trip -- confirming the expansion happened inline.
+    assert len(scripted.calls) == 2
+    first_tool_result = next(m.content for m in scripted.calls[1] if m.role == "tool")
+    assert "$30/month" in first_tool_result
+    assert "$50/month" in first_tool_result
+
+
+async def test_search_documents_does_not_auto_expand_supersedes_relationship():
+    # supersedes relationships stay explicit-only (get_related_documents), not
+    # auto-included by default -- otherwise every search would silently pull in
+    # a superseded document's stale content, reintroducing the version-mixing
+    # bug an earlier fix addressed.
+    chunk = Chunk(
+        doc_id="doc-new",
+        text="Current PTO is 15 days.",
+        metadata={
+            "is_latest": True,
+            "related_documents": [
+                {"relation_type": "supersedes", "topic": None, "target": "Acme Employee Handbook 2025"}
+            ],
+        },
+    )
+    retriever = _make_retriever_with_chunk(chunk)
+
+    scripted = ScriptedToolLLMClient(
+        [
+            GenerationResult(
+                tool_calls=[ToolCall(id="1", name="search_documents", arguments={"query": "PTO"})]
+            ),
+            GenerationResult(text="15 days."),
+        ]
+    )
+
+    async with async_session_factory() as db:
+        db.add(Document(id="doc-new", filename="new.docx", content_type="x", storage_path="x", title="Acme Employee Handbook"))
+        db.add(Document(id="doc-old", filename="old.docx", content_type="x", storage_path="x", title="Acme Employee Handbook 2025"))
+        db.add(
+            DocumentRelationship(
+                source_doc_id="doc-new",
+                target_doc_id="doc-old",
+                target_doc_ref="Acme Employee Handbook 2025",
+                relation_type="supersedes",
+                source_text="supersedes the prior version",
+            )
+        )
+        await db.commit()
+
+        agent = SearchAgent(retriever=retriever, llm_client=scripted)
+        result = await agent.run([Message(role="user", content="What is the PTO?")], db=db)
+
+    assert result.final_text == "15 days."
+    source_doc_ids = {s.chunk.doc_id for s in result.sources}
+    assert source_doc_ids == {"doc-new"}  # doc-old NOT auto-pulled in
+
+
 async def test_related_documents_tool_degrades_gracefully_without_db():
     chunk = Chunk(doc_id="doc-regional", text="Local PTO policy.", metadata={"is_latest": True})
     retriever = _make_retriever_with_chunk(chunk)

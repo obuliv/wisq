@@ -1,12 +1,19 @@
 import logging
 from pathlib import Path
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document, DocumentStatus
 from app.ingestion.chunking import Chunk, Chunker
+from app.ingestion.field_registry import plain_field_chunk_metadata, scope_chunk_fields
 from app.ingestion.loaders.base import Element, get_loader
-from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope, PersonnelScope
+from app.ingestion.metadata import (
+    DocumentMetadata,
+    DocumentMetadataExtractor,
+    GeographicScope,
+    PersonnelScope,
+)
 from app.ingestion.relationships import (
     RelationshipHint,
     SectionAnnotationExtractor,
@@ -94,14 +101,16 @@ class IngestionPipeline:
             logger.exception("Metadata extraction failed for document %s", document.id)
             return
 
-        document.doc_type = metadata.doc_type or document.doc_type
-        document.title = metadata.title or document.title
-        document.version = metadata.version or document.version
-        document.effective_date = metadata.effective_date or document.effective_date
-        if metadata.applicable_regions is not None:
-            document.applicable_regions = metadata.applicable_regions.model_dump()
-        if metadata.applicable_personnel is not None:
-            document.applicable_personnel = metadata.applicable_personnel.model_dump()
+        # Generic over DocumentMetadata's fields: scalars keep the existing
+        # Document value when nothing was extracted (falsy), scope fields are
+        # dumped to a plain dict for the JSON column. No field is ever falsy
+        # except None, so `if not value` is equivalent to each field's
+        # previous per-field guard.
+        for name in DocumentMetadata.model_fields:
+            value = getattr(metadata, name)
+            if not value:
+                continue
+            setattr(document, name, value.model_dump() if isinstance(value, BaseModel) else value)
 
     async def _resolve_version(self, db: AsyncSession, document: Document) -> None:
         try:
@@ -149,44 +158,29 @@ class IngestionPipeline:
             {"relation_type": h.relation_type, "topic": h.topic, "target": h.target_doc_ref}
             for h in relationship_hints
         ]
+        # Same for every chunk of this document -- doc_type/effective_date/
+        # is_latest/default_precedence_rule have no per-chunk variation.
+        plain_fields = plain_field_chunk_metadata(document)
         for chunk in chunks:
             heading_path = tuple(chunk.metadata.get("heading_path", []))
-            scope = self._resolve_geo_scope(heading_path, geo_overrides, default_scope)
-            chunk.metadata.update(
-                {
-                    "doc_type": document.doc_type,
-                    "version": document.version,
-                    # Human-readable name for citations -- once an answer can cite
-                    # chunks from more than one document (see get_related_documents),
-                    # a bare doc_id UUID isn't enough to tell them apart in the UI.
-                    "document_title": document.title or document.filename,
-                    "effective_date": document.effective_date.isoformat()
-                    if document.effective_date
-                    else None,
-                    "is_latest": document.is_latest,
-                    "applicable_regions": scope.model_dump() if scope else None,
-                    # Flat lists alongside the nested applicable_regions dict above --
-                    # the any/not_any/any_or_empty Filters predicates (rag/fakes.py)
-                    # need list-shaped payload fields to query, since the nested dict
-                    # form can't be targeted by the generic exact-match/range engine.
-                    "regions_included": scope.included if scope else [],
-                    "regions_excluded": scope.excluded if scope else [],
-                    "applicable_personnel": personnel_scope.model_dump() if personnel_scope else None,
-                    "personnel_included": personnel_scope.included if personnel_scope else [],
-                    "personnel_excluded": personnel_scope.excluded if personnel_scope else [],
-                    # Lets the model see, on *any* search hit for this document,
-                    # which topics have a stated cross-document relationship --
-                    # without needing to have retrieved the specific section
-                    # (e.g. "CONFLICTS AND PRECEDENCE") the relationship was
-                    # extracted from, which vector search can easily miss.
-                    "related_documents": related_documents,
-                    # Same "bake it onto every chunk" treatment as related_documents
-                    # above -- a general "the more generous benefit applies"-style
-                    # rule needs to be visible on this document's OWN gym/PTO/etc.
-                    # chunks, not just on the specific section that stated the rule.
-                    "default_precedence_rule": document.default_precedence_rule,
-                }
-            )
+            # Geography is the only scope field with section-level override
+            # resolution -- personnel deliberately has none (see PersonnelScope's
+            # docstring in metadata.py).
+            regions_scope = self._resolve_geo_scope(heading_path, geo_overrides, default_scope)
+            chunk.metadata.update(plain_fields)
+            chunk.metadata["version"] = document.version
+            # Human-readable name for citations -- once an answer can cite
+            # chunks from more than one document (see get_related_documents),
+            # a bare doc_id UUID isn't enough to tell them apart in the UI.
+            chunk.metadata["document_title"] = document.title or document.filename
+            chunk.metadata.update(scope_chunk_fields("regions", regions_scope))
+            chunk.metadata.update(scope_chunk_fields("personnel", personnel_scope))
+            # Lets the model see, on *any* search hit for this document, which
+            # topics have a stated cross-document relationship -- without
+            # needing to have retrieved the specific section (e.g. "CONFLICTS
+            # AND PRECEDENCE") the relationship was extracted from, which
+            # vector search can easily miss.
+            chunk.metadata["related_documents"] = related_documents
 
     @staticmethod
     def _resolve_geo_scope(

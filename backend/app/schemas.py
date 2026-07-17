@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel
 
 
+# Keep in sync with frontend/src/api/client.ts:DocumentOut
 class DocumentOut(BaseModel):
     id: str
     filename: str

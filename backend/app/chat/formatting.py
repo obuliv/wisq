@@ -1,3 +1,6 @@
+from app.ingestion.field_registry import PLAIN_FIELDS, SCOPE_PREFIXES, render_scope
+
+
 def format_document_scope(doc_id: str, metadata: dict) -> str:
     """One-line summary of a document's structured scope (region/personnel
     coverage, doc_type, is_latest, effective_date, related_documents,
@@ -21,30 +24,15 @@ def format_document_scope(doc_id: str, metadata: dict) -> str:
     title = metadata.get("document_title") or doc_id
     parts = [f'doc_id={doc_id}', f'title="{title}"']
 
-    doc_type = metadata.get("doc_type")
-    if doc_type:
-        parts.append(f"doc_type={doc_type}")
+    for field in PLAIN_FIELDS:
+        rendered = field.render(field.chunk_key, metadata)
+        if rendered is not None:
+            parts.append(rendered)
 
-    effective_date = metadata.get("effective_date")
-    if effective_date:
-        parts.append(f"effective_date={effective_date}")
-
-    if "is_latest" in metadata:
-        parts.append(f"is_latest={metadata['is_latest']}")
-
-    regions_included = metadata.get("regions_included") or []
-    regions_excluded = metadata.get("regions_excluded") or []
-    if regions_included or regions_excluded:
-        parts.append(
-            f"regions(included={regions_included or 'any'}, excluded={regions_excluded or 'none'})"
-        )
-
-    personnel_included = metadata.get("personnel_included") or []
-    personnel_excluded = metadata.get("personnel_excluded") or []
-    if personnel_included or personnel_excluded:
-        parts.append(
-            f"personnel(included={personnel_included or 'any'}, excluded={personnel_excluded or 'none'})"
-        )
+    for prefix in SCOPE_PREFIXES:
+        rendered = render_scope(prefix, metadata)
+        if rendered is not None:
+            parts.append(rendered)
 
     related_documents = metadata.get("related_documents") or []
     if related_documents:
@@ -57,9 +45,5 @@ def format_document_scope(doc_id: str, metadata: dict) -> str:
             f"related_documents=[{rendered}] (call get_related_documents(doc_id={doc_id}) "
             "if relevant to the question)"
         )
-
-    default_precedence_rule = metadata.get("default_precedence_rule")
-    if default_precedence_rule:
-        parts.append(f'default_precedence_rule="{default_precedence_rule}"')
 
     return "[" + " ".join(parts) + "]"

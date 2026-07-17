@@ -21,7 +21,17 @@ SEARCH_TOOL = ToolDefinition(
             },
             "geography": {
                 "type": "string",
-                "description": "Region or country to scope the search to, e.g. 'Singapore'. Omit to search all regions.",
+                "description": (
+                    "A SPECIFIC country or named region to scope the search to, e.g. "
+                    "'Singapore' or 'Taiwan' -- only set this when the user named a "
+                    "specific country/region. Do NOT set this to a broad/continent-level "
+                    "term like 'Asia' or 'Europe': documents are scoped by country, not "
+                    "continent, so a continent-level filter silently excludes every "
+                    "country-specific document and hides the fact that different "
+                    "countries in that continent may have different policies. For a "
+                    "continent-level or otherwise vague location, omit this filter "
+                    "entirely so all region-specific documents are visible."
+                ),
             },
             "year": {
                 "type": "integer",
@@ -42,6 +52,22 @@ SEARCH_TOOL = ToolDefinition(
 )
 
 
+_BROAD_GEOGRAPHY_TERMS = {
+    "asia",
+    "apac",
+    "europe",
+    "emea",
+    "africa",
+    "north america",
+    "south america",
+    "latin america",
+    "oceania",
+    "middle east",
+    "worldwide",
+    "global",
+}
+
+
 def build_search_filters(arguments: dict) -> Filters:
     """Maps search_documents tool call arguments to a Filters dict.
 
@@ -58,7 +84,15 @@ def build_search_filters(arguments: dict) -> Filters:
     filters: Filters = {} if year else {"is_latest": True}
 
     geography = arguments.get("geography")
-    if geography:
+    if geography and geography.strip().lower() not in _BROAD_GEOGRAPHY_TERMS:
+        # Documents are scoped by country, not continent -- despite the tool
+        # description telling the model to omit continent-level terms like
+        # "Asia", live testing showed it still passes them sometimes. Silently
+        # dropping the filter for a known broad term (instead of trusting the
+        # model to comply) guarantees country-specific documents in that
+        # continent stay visible in results rather than being fuzzy-matched
+        # away against a term ("Asia") that shares little text with the
+        # specific country names ("China", "Japan", "Taiwan") they list.
         filters["regions_included"] = {"any_or_empty": [geography]}
         filters["regions_excluded"] = {"not_any": [geography]}
 

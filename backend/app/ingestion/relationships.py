@@ -99,15 +99,33 @@ _ANNOTATION_SYSTEM_PROMPT = (
     "specific topic).\n"
     "2. Any statement narrowing which regions/countries THIS SECTION (not "
     "necessarily the whole document) applies to.\n"
-    "3. Any GENERAL rule stated for resolving conflicts with other, unnamed "
-    "Acme documents/policies (e.g. \"the more generous benefit applies\") -- as "
-    "opposed to a rule naming one specific document, which belongs in "
-    "relationships instead. Only extract this if the section states the actual "
-    "substantive rule. A sentence that merely POINTS to another section of THIS "
-    "SAME document (e.g. \"see Section 8 for details\", \"read the Conflicts and "
-    "Precedence section carefully\") is NOT itself a rule -- leave "
-    "default_precedence_rule null for those sentences and wait for the section "
-    "that actually states the rule.\n"
+    "3. Any GENERAL rule stated for resolving conflicts with other Acme "
+    "documents/policies, but ONLY if NO specific document is named (e.g. \"the "
+    "more generous benefit applies\"). The test is mechanical: if the sentence "
+    "names ANY specific other document -- even when phrased as an instruction, "
+    "e.g. \"for all other benefits, refer to the global Acme Employee "
+    "Handbook\" -- that is a relationships entry (relation_type=\"reference\" "
+    "or \"precedence\", target_doc_ref=the named document), NOT "
+    "default_precedence_rule. default_precedence_rule is ONLY for a rule with "
+    "no document named anywhere in the sentence. A sentence that merely POINTS "
+    "to another section of THIS SAME document (e.g. \"see Section 8 for "
+    "details\") is NOT itself a rule either -- leave default_precedence_rule "
+    "null for that too.\n"
+    "\n"
+    "Example -- the text \"For all other benefits, refer to the precedence "
+    "rules in the global Acme Employee Handbook. Where a conflict arises with "
+    "respect to PTO, the local policy takes precedence.\" must produce:\n"
+    '{"relationships": [{"target_doc_ref": "global Acme Employee Handbook", '
+    '"relation_type": "reference", "topic": "other benefits", "precedence": '
+    'null, "source_text": "For all other benefits, refer to the precedence '
+    'rules in the global Acme Employee Handbook."}, {"target_doc_ref": "global '
+    'Acme Employee Handbook", "relation_type": "precedence", "topic": "PTO", '
+    '"precedence": "source_over_target", "source_text": "Where a conflict '
+    'arises with respect to PTO, the local policy takes precedence."}], '
+    '"geographic_scope": null, "default_precedence_rule": null}\n'
+    "default_precedence_rule stays null here because BOTH statements name a "
+    "specific document -- neither is a generic, no-document-named rule.\n"
+    "\n"
     'Return ONLY JSON: {"relationships": [{"target_doc_ref": string, '
     '"relation_type": "precedence"|"reference"|"supplement", "topic": string|null, '
     '"precedence": "source_over_target"|"target_over_source"|null, '

@@ -19,7 +19,18 @@ class Settings(BaseSettings):
     # (or, once implemented, "anthropic") via .env to use a real provider.
     llm_provider: str = "fake"
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    # gpt-5.6-luna measured noticeably more reliable than gpt-4o-mini on
+    # multi-document precedence reasoning (e.g. applying "the more generous
+    # benefit applies" across two conflicting figures) in live testing -- see
+    # CLAUDE.md's Retrieval section. It's a reasoning model, which is why
+    # openai_reasoning_effort defaults to "none" alongside it (see below).
+    openai_model: str = "gpt-5.6-luna"
+    # Reasoning models (e.g. gpt-5.x, including the gpt-5.6-luna default above)
+    # reject tool calls on chat.completions unless reasoning_effort is set
+    # explicitly; non-reasoning models (e.g. gpt-4o-mini) reject the param
+    # outright if it's sent at all ("Unrecognized request argument"). Clear
+    # this to "" in .env if you swap openai_model to a non-reasoning model.
+    openai_reasoning_effort: str = "none"
     # Not implemented yet -- see app/llm/openai_client.py's docstring for the
     # swap-point pattern a future app/llm/anthropic_client.py would follow.
     anthropic_api_key: str = ""

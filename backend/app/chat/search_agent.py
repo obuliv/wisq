@@ -94,13 +94,19 @@ class SearchAgent:
         original_question: str,
     ) -> str:
         if call.name == SEARCH_TOOL.name:
-            return self._execute_search(call, merged, top_k, caller_filters)
+            return await self._execute_search(call, merged, top_k, caller_filters, db, original_question)
         if call.name == RELATED_DOCS_TOOL.name:
             return await self._execute_related(call, merged, db, original_question)
         return f"Tool call failed: unknown tool '{call.name}'."
 
-    def _execute_search(
-        self, call: ToolCall, merged: dict[str, ScoredChunk], top_k: int, caller_filters: Filters | None
+    async def _execute_search(
+        self,
+        call: ToolCall,
+        merged: dict[str, ScoredChunk],
+        top_k: int,
+        caller_filters: Filters | None,
+        db: AsyncSession | None,
+        original_question: str,
     ) -> str:
         try:
             call_filters = build_search_filters(call.arguments)
@@ -113,7 +119,69 @@ class SearchAgent:
             return f"Search failed: {exc}"
 
         self._merge(scored, merged)
-        return format_search_results(scored)
+        result_text = format_search_results(scored)
+
+        if db is not None:
+            expansion = await self._auto_expand_related(scored, merged, db, query or original_question)
+            if expansion:
+                result_text += "\n\n" + expansion
+
+        return result_text
+
+    async def _auto_expand_related(
+        self,
+        scored: list[ScoredChunk],
+        merged: dict[str, ScoredChunk],
+        db: AsyncSession,
+        fallback_query: str,
+    ) -> str:
+        """Whenever a retrieved chunk's document has a stated non-version
+        relationship (precedence/reference/supplement), automatically pull in
+        the connected document's content in this SAME tool result -- rather
+        than relying on the model to notice the related_documents hint and
+        choose to make a separate get_related_documents call, which real
+        testing showed was correct only ~50% of the time (the model doesn't
+        reliably choose the extra step). `supersedes` is deliberately excluded:
+        auto-including a superseded document's content by default would
+        reintroduce the stale-version contamination bug fixed earlier --
+        reaching an older version should stay an explicit, LLM-decided
+        get_related_documents call.
+        """
+        seen_doc_ids: set[str] = set()
+        sections: list[str] = []
+        for s in scored:
+            doc_id = s.chunk.doc_id
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+
+            related = s.chunk.metadata.get("related_documents") or []
+            if not any(r.get("relation_type") != "supersedes" for r in related):
+                continue
+
+            try:
+                contexts = await load_related_context(
+                    db, self._retriever, doc_id, None, fallback_query, self._related_doc_top_k
+                )
+            except Exception:  # noqa: BLE001 - a failed auto-expansion shouldn't kill the chat turn
+                logger.exception("Auto-expanding related documents failed for doc_id=%s", doc_id)
+                continue
+
+            contexts = [c for c in contexts if c.relationship.relation_type != "supersedes"]
+            if not contexts:
+                continue
+
+            for ctx in contexts:
+                self._merge(ctx.chunks, merged)
+            sections.append(format_related_documents(doc_id, contexts))
+
+        if not sections:
+            return ""
+        return (
+            "Automatically included related document context (the retrieved "
+            "document above has a stated relationship with another document):"
+            "\n\n" + "\n\n---\n\n".join(sections)
+        )
 
     async def _execute_related(
         self,
