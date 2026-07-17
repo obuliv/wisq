@@ -10,6 +10,7 @@ export interface DocumentOut {
   effective_date: string | null;
   applicable_regions: { included: string[]; excluded: string[] } | null;
   applicable_personnel: { included: string[]; excluded: string[] } | null;
+  default_precedence_rule: string | null;
   is_latest: boolean;
   doc_metadata: Record<string, unknown> | null;
   created_at: string;

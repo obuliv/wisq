@@ -32,7 +32,8 @@ PRECEDENCE_JSON = """
       "source_text": "TAKES PRECEDENCE over any conflicting PTO provision"
     }
   ],
-  "geographic_scope": null
+  "geographic_scope": null,
+  "default_precedence_rule": "The more generous perk or benefit applies when this handbook conflicts with another Acme policy or handbook."
 }
 """
 
@@ -131,12 +132,24 @@ async def test_pipeline_applies_relationship_and_geo_override_end_to_end(tmp_pat
     assert eligibility_chunk.metadata["related_documents"] == [
         {"relation_type": "precedence", "topic": "PTO", "target": "global Acme Employee Handbook"}
     ]
+    # Same "baked onto every chunk" treatment, one level deeper: the general
+    # precedence rule was stated in the SAME "Conflicts and Precedence" section
+    # as the relationship, but still must show up on the unrelated Eligibility
+    # chunk too.
+    assert eligibility_chunk.metadata["default_precedence_rule"] == (
+        "The more generous perk or benefit applies when this handbook "
+        "conflicts with another Acme policy or handbook."
+    )
 
     precedence_chunk = all_chunks[("Conflicts and Precedence",)]
     assert precedence_chunk.metadata["applicable_regions"] is None
     assert precedence_chunk.metadata["related_documents"] == [
         {"relation_type": "precedence", "topic": "PTO", "target": "global Acme Employee Handbook"}
     ]
+    assert precedence_chunk.metadata["default_precedence_rule"] == (
+        "The more generous perk or benefit applies when this handbook "
+        "conflicts with another Acme policy or handbook."
+    )
 
 
 PERSONNEL_METADATA_JSON = (

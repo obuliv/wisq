@@ -89,6 +89,7 @@ class _ExtractedRelationship(BaseModel):
 class _SectionAnnotations(BaseModel):
     relationships: list[_ExtractedRelationship] = []
     geographic_scope: GeographicScope | None = None
+    default_precedence_rule: str | None = None
 
 
 _ANNOTATION_SYSTEM_PROMPT = (
@@ -98,11 +99,21 @@ _ANNOTATION_SYSTEM_PROMPT = (
     "specific topic).\n"
     "2. Any statement narrowing which regions/countries THIS SECTION (not "
     "necessarily the whole document) applies to.\n"
+    "3. Any GENERAL rule stated for resolving conflicts with other, unnamed "
+    "Acme documents/policies (e.g. \"the more generous benefit applies\") -- as "
+    "opposed to a rule naming one specific document, which belongs in "
+    "relationships instead. Only extract this if the section states the actual "
+    "substantive rule. A sentence that merely POINTS to another section of THIS "
+    "SAME document (e.g. \"see Section 8 for details\", \"read the Conflicts and "
+    "Precedence section carefully\") is NOT itself a rule -- leave "
+    "default_precedence_rule null for those sentences and wait for the section "
+    "that actually states the rule.\n"
     'Return ONLY JSON: {"relationships": [{"target_doc_ref": string, '
     '"relation_type": "precedence"|"reference"|"supplement", "topic": string|null, '
     '"precedence": "source_over_target"|"target_over_source"|null, '
     '"source_text": string}], "geographic_scope": {"included": [string], '
-    '"excluded": [string]}|null}. Use an empty list / null when nothing applies.'
+    '"excluded": [string]}|null, "default_precedence_rule": string|null}. Use an '
+    "empty list / null when nothing applies."
 )
 
 
@@ -151,6 +162,12 @@ async def extract_and_store_relationships(
         if annotations.geographic_scope is not None:
             geo_overrides[section.heading_path] = annotations.geographic_scope
 
+        if annotations.default_precedence_rule and not document.default_precedence_rule:
+            # First non-null extraction wins, not last -- a later candidate
+            # section's (possibly weaker/mistaken) extraction shouldn't clobber
+            # an already-correct one from an earlier section.
+            document.default_precedence_rule = annotations.default_precedence_rule
+
         for rel in annotations.relationships:
             target_id = await _resolve_target(db, rel.target_doc_ref)
             db.add(
@@ -179,19 +196,30 @@ async def _resolve_target(db: AsyncSession, target_doc_ref: str) -> str | None:
     """Fuzzy-matches a mentioned document name against existing Document titles.
     Returns None (leaving the relationship unresolved) when no confident match
     exists yet -- reconcile_relationships backfills it once/if that document
-    is uploaded."""
+    is uploaded.
+
+    Multiple versions of the same document family (e.g. "Acme Employee
+    Handbook" 2025 and 2026) share the same title, so they score identically
+    against a reference like "global Acme Employee Handbook" -- comparing by
+    score alone left the tie-break to whichever row the DB query happened to
+    return first (arbitrary, and in practice often the superseded version).
+    Compare by (score, is_latest) instead: score still strictly dominates (a
+    genuinely better title match always wins), but a tie now resolves to the
+    current version.
+    """
     normalized_ref = normalize_title(target_doc_ref)
     result = await db.execute(select(Document).where(Document.title.is_not(None)))
 
     best_match: Document | None = None
-    best_score = 0.0
+    best_key: tuple[float, bool] = (0.0, False)
     for candidate in result.scalars().all():
         score = fuzz.token_set_ratio(normalized_ref, normalize_title(candidate.title))
-        if score > best_score:
-            best_score = score
+        key = (score, candidate.is_latest)
+        if key > best_key:
+            best_key = key
             best_match = candidate
 
-    return best_match.id if best_match is not None and best_score >= _MATCH_THRESHOLD else None
+    return best_match.id if best_match is not None and best_key[0] >= _MATCH_THRESHOLD else None
 
 
 async def reconcile_relationships(db: AsyncSession, document: Document) -> None:

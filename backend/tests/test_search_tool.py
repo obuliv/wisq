@@ -156,3 +156,36 @@ def test_format_search_results_omits_related_documents_when_absent():
     result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
 
     assert "related_documents" not in result
+
+
+def test_format_search_results_surfaces_default_precedence_rule():
+    # Regression test for the "gym benefits for Taiwan" investigation: even
+    # once related_documents gets the model to check the global handbook, the
+    # global handbook's OWN general conflict-resolution rule is only reliably
+    # visible this same way -- baked onto its own chunks, not dependent on
+    # having retrieved its specific CONFLICTS AND PRECEDENCE section.
+    chunk = Chunk(
+        doc_id="global-doc",
+        text="Gym reimbursement is $50/month.",
+        metadata={
+            "document_title": "Acme Employee Handbook",
+            "is_latest": True,
+            "default_precedence_rule": "The more generous perk or benefit applies.",
+        },
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert 'default_precedence_rule="The more generous perk or benefit applies."' in result
+
+
+def test_format_search_results_omits_default_precedence_rule_when_absent():
+    chunk = Chunk(
+        doc_id="doc-1",
+        text="Some text.",
+        metadata={"document_title": "APAC Benefits Handbook", "is_latest": True},
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert "default_precedence_rule" not in result

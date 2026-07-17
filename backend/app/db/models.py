@@ -46,6 +46,11 @@ class Document(Base):
     # {"included": [...], "excluded": [...]} -- which personnel categories
     # (employees, contractors, ...) this document applies to, same shape.
     applicable_personnel: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Free-text general rule for resolving conflicts with OTHER (unnamed) Acme
+    # documents/policies, e.g. "the more generous benefit applies" -- as opposed
+    # to a rule about ONE specific named document, which is a
+    # DocumentRelationship row instead. See app/ingestion/relationships.py.
+    default_precedence_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Versioning (app/ingestion/versioning.py): documents sharing the same
     # normalized title are grouped, and only the newest is is_latest=True.

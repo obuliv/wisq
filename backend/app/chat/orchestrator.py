@@ -27,9 +27,15 @@ _SYSTEM_PROMPT = (
     "full picture just because it answers the question on its face. Also use effective_date "
     "and scope to judge whether a retrieved document actually covers the situation asked "
     "about (region, personnel category, year), and search again (different filters, or a "
-    "different/related document) if it doesn't. If the documents don't contain the answer, "
-    "say you don't know -- never state a figure as applying to a year, region, or version "
-    "that isn't confirmed by a retrieved passage."
+    "different/related document) if it doesn't. A search result may also state a "
+    "default_precedence_rule -- a general rule for resolving conflicts with other, unnamed "
+    "documents (e.g. \"the more generous benefit applies\"). If you've found conflicting "
+    "figures for the same topic across two documents and no more specific named-document "
+    "rule already resolved it, apply the default_precedence_rule shown on the connected "
+    "document to decide which figure governs -- state which one applies and why, don't just "
+    "list both figures. If the documents don't contain the answer, say you don't know -- "
+    "never state a figure as applying to a year, region, or version that isn't confirmed by "
+    "a retrieved passage."
 )
 
 

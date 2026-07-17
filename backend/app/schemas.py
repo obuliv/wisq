@@ -15,6 +15,7 @@ class DocumentOut(BaseModel):
     effective_date: date | None = None
     applicable_regions: dict | None = None
     applicable_personnel: dict | None = None
+    default_precedence_rule: str | None = None
     is_latest: bool
     doc_metadata: dict | None = None
     created_at: datetime

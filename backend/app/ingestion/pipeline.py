@@ -180,6 +180,11 @@ class IngestionPipeline:
                     # (e.g. "CONFLICTS AND PRECEDENCE") the relationship was
                     # extracted from, which vector search can easily miss.
                     "related_documents": related_documents,
+                    # Same "bake it onto every chunk" treatment as related_documents
+                    # above -- a general "the more generous benefit applies"-style
+                    # rule needs to be visible on this document's OWN gym/PTO/etc.
+                    # chunks, not just on the specific section that stated the rule.
+                    "default_precedence_rule": document.default_precedence_rule,
                 }
             )
 
