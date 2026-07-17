@@ -22,7 +22,7 @@ This runs Postgres, Qdrant, the backend, and the frontend together.
 
 ```bash
 cp .env.example .env
-docker-compose up --build
+docker compose up --build
 ```
 
 - Frontend: http://localhost:3000
@@ -44,7 +44,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # Needs a reachable Postgres + Qdrant. Either:
-#   docker-compose up postgres qdrant   (from the repo root, in another terminal)
+#   docker compose up postgres qdrant   (from the repo root, in another terminal)
 # or point DATABASE_URL/QDRANT_URL at your own instances.
 export DATABASE_URL=postgresql+asyncpg://wisq:wisq@localhost:5432/wisq
 export QDRANT_URL=http://localhost:6333
