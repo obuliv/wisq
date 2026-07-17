@@ -123,9 +123,20 @@ async def test_pipeline_applies_relationship_and_geo_override_end_to_end(tmp_pat
         "excluded": [],
     }
     assert eligibility_chunk.metadata["is_latest"] is True
+    # The relationship was extracted from a *different* section ("Conflicts and
+    # Precedence"), but the hint is document-level -- it must still show up here,
+    # on the Eligibility chunk, since a search hit on ANY chunk of this document
+    # should nudge the model toward get_related_documents, not just a hit on the
+    # exact section the relationship happened to be extracted from.
+    assert eligibility_chunk.metadata["related_documents"] == [
+        {"relation_type": "precedence", "topic": "PTO", "target": "global Acme Employee Handbook"}
+    ]
 
     precedence_chunk = all_chunks[("Conflicts and Precedence",)]
     assert precedence_chunk.metadata["applicable_regions"] is None
+    assert precedence_chunk.metadata["related_documents"] == [
+        {"relation_type": "precedence", "topic": "PTO", "target": "global Acme Employee Handbook"}
+    ]
 
 
 PERSONNEL_METADATA_JSON = (

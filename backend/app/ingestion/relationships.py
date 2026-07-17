@@ -38,6 +38,20 @@ class CandidateSection:
     locator: str | None
 
 
+@dataclass
+class RelationshipHint:
+    """Compact summary of an outgoing DocumentRelationship, baked onto every
+    chunk of the source document (see IngestionPipeline._enrich_chunk_metadata)
+    so the model sees it on *any* search hit for that document -- not just if
+    it happens to retrieve the specific section the relationship was extracted
+    from, which vector search can easily miss (e.g. a "gym benefits" query
+    won't reliably retrieve a "CONFLICTS AND PRECEDENCE" section)."""
+
+    relation_type: str
+    topic: str | None
+    target_doc_ref: str
+
+
 def find_candidate_sections(elements: list[Element]) -> list[CandidateSection]:
     """Groups elements by heading_path and keeps only sections whose heading or
     body text contains a relationship/scope cue -- avoids sending the whole
@@ -111,12 +125,23 @@ async def extract_and_store_relationships(
     document: Document,
     elements: list[Element],
     extractor: SectionAnnotationExtractor,
-) -> dict[tuple[str, ...], GeographicScope]:
+) -> tuple[dict[tuple[str, ...], GeographicScope], list[RelationshipHint]]:
     """Runs section-annotation extraction for `document`, persists resolved
-    DocumentRelationship rows, and returns a heading_path -> GeographicScope map
-    of section-level geographic overrides for the chunker to apply. Never raises:
-    a section the LLM fails to parse is simply skipped (see extract_json)."""
+    DocumentRelationship rows, and returns (a) a heading_path -> GeographicScope
+    map of section-level geographic overrides for the chunker to apply, and (b)
+    a RelationshipHint per outgoing relationship found, for the pipeline to bake
+    onto every chunk's metadata (see IngestionPipeline._enrich_chunk_metadata).
+    Never raises: a section the LLM fails to parse is simply skipped (see
+    extract_json).
+
+    Only covers relationships where `document` is the source -- a document only
+    knows about its own outgoing references at its own ingestion time. The
+    reverse case (an existing document later becoming the *target* of a new
+    document's relationship) isn't hinted retroactively here; it would need the
+    same update_metadata staleness-patching mechanism used for `is_latest`.
+    """
     geo_overrides: dict[tuple[str, ...], GeographicScope] = {}
+    hints: list[RelationshipHint] = []
 
     for section in find_candidate_sections(elements):
         annotations = extractor.extract(section)
@@ -140,9 +165,14 @@ async def extract_and_store_relationships(
                     source_locator=section.locator,
                 )
             )
+            hints.append(
+                RelationshipHint(
+                    relation_type=rel.relation_type, topic=rel.topic, target_doc_ref=rel.target_doc_ref
+                )
+            )
 
     await reconcile_relationships(db, document)
-    return geo_overrides
+    return geo_overrides, hints
 
 
 async def _resolve_target(db: AsyncSession, target_doc_ref: str) -> str | None:

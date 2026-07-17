@@ -7,7 +7,11 @@ from app.db.models import Document, DocumentStatus
 from app.ingestion.chunking import Chunk, Chunker
 from app.ingestion.loaders.base import Element, get_loader
 from app.ingestion.metadata import DocumentMetadataExtractor, GeographicScope, PersonnelScope
-from app.ingestion.relationships import SectionAnnotationExtractor, extract_and_store_relationships
+from app.ingestion.relationships import (
+    RelationshipHint,
+    SectionAnnotationExtractor,
+    extract_and_store_relationships,
+)
 from app.ingestion.versioning import resolve_latest
 from app.rag.interfaces import EmbeddedChunk, Embedder, SparseEmbedder, VectorStore
 
@@ -58,10 +62,10 @@ class IngestionPipeline:
 
             self._apply_metadata(document, file_path.name, elements)
             await self._resolve_version(db, document)
-            geo_overrides = await self._extract_relationships(db, document, elements)
+            geo_overrides, relationship_hints = await self._extract_relationships(db, document, elements)
 
             chunks = self._chunker.split(doc_id, elements)
-            self._enrich_chunk_metadata(chunks, document, geo_overrides)
+            self._enrich_chunk_metadata(chunks, document, geo_overrides, relationship_hints)
 
             vectors = self._embedder.embed([c.text for c in chunks])
             sparse_vectors = (
@@ -114,20 +118,21 @@ class IngestionPipeline:
 
     async def _extract_relationships(
         self, db: AsyncSession, document: Document, elements: list[Element]
-    ) -> dict[tuple[str, ...], GeographicScope]:
+    ) -> tuple[dict[tuple[str, ...], GeographicScope], list[RelationshipHint]]:
         try:
             return await extract_and_store_relationships(
                 db, document, elements, self._relationship_extractor
             )
         except Exception:
             logger.exception("Relationship extraction failed for document %s", document.id)
-            return {}
+            return {}, []
 
     def _enrich_chunk_metadata(
         self,
         chunks: list[Chunk],
         document: Document,
         geo_overrides: dict[tuple[str, ...], GeographicScope],
+        relationship_hints: list[RelationshipHint],
     ) -> None:
         default_scope = (
             GeographicScope(**document.applicable_regions) if document.applicable_regions else None
@@ -140,6 +145,10 @@ class IngestionPipeline:
             if document.applicable_personnel
             else None
         )
+        related_documents = [
+            {"relation_type": h.relation_type, "topic": h.topic, "target": h.target_doc_ref}
+            for h in relationship_hints
+        ]
         for chunk in chunks:
             heading_path = tuple(chunk.metadata.get("heading_path", []))
             scope = self._resolve_geo_scope(heading_path, geo_overrides, default_scope)
@@ -165,6 +174,12 @@ class IngestionPipeline:
                     "applicable_personnel": personnel_scope.model_dump() if personnel_scope else None,
                     "personnel_included": personnel_scope.included if personnel_scope else [],
                     "personnel_excluded": personnel_scope.excluded if personnel_scope else [],
+                    # Lets the model see, on *any* search hit for this document,
+                    # which topics have a stated cross-document relationship --
+                    # without needing to have retrieved the specific section
+                    # (e.g. "CONFLICTS AND PRECEDENCE") the relationship was
+                    # extracted from, which vector search can easily miss.
+                    "related_documents": related_documents,
                 }
             )
 

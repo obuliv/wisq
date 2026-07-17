@@ -85,10 +85,14 @@ async def test_extract_and_store_relationships_creates_precedence_row(tmp_path):
         db.add(document)
         await db.flush()
 
-        geo_overrides = await extract_and_store_relationships(db, document, elements, extractor)
+        geo_overrides, hints = await extract_and_store_relationships(db, document, elements, extractor)
         await db.commit()
 
         assert geo_overrides == {}  # this section only stated a relationship, no geo scope
+        assert len(hints) == 1
+        assert hints[0].relation_type == "precedence"
+        assert hints[0].topic == "PTO"
+        assert hints[0].target_doc_ref == "global Acme Employee Handbook"
 
         result = await db.execute(
             select(DocumentRelationship).where(DocumentRelationship.source_doc_id == document.id)

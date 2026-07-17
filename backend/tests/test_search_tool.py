@@ -83,3 +83,76 @@ def test_format_search_results_surfaces_document_scope_and_groups_by_doc():
     assert "Gym reimbursement is $50/month." in result
     # global_chunk has no regions/personnel metadata -- shouldn't render an empty scope clause.
     assert 'title="Acme Employee Handbook"' in result
+
+
+def test_format_search_results_surfaces_effective_date():
+    # Regression test for a real hallucination found via manual testing: the
+    # model stated the current (2026) PTO figure as fact for a nonexistent
+    # "2021" query, since nothing in the tool result flagged which year the
+    # retrieved passage was actually dated. effective_date is now a hard,
+    # explicit signal right next to the retrieved text.
+    chunk = Chunk(
+        doc_id="doc-2026",
+        text="The standard PTO entitlement is 15 days per year.",
+        metadata={
+            "document_title": "Acme Employee Handbook",
+            "is_latest": True,
+            "effective_date": "2026-01-01",
+        },
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert "effective_date=2026-01-01" in result
+
+
+def test_format_search_results_omits_effective_date_when_absent():
+    chunk = Chunk(
+        doc_id="doc-1",
+        text="Some text.",
+        metadata={"document_title": "APAC Benefits Handbook", "is_latest": True},
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert "effective_date" not in result
+
+
+def test_format_search_results_surfaces_related_documents_hint():
+    # Regression test for a real gap found via manual testing: a plain query
+    # ("gym benefits for Taiwan") retrieved only the REGIONAL BENEFITS section,
+    # never the CONFLICTS AND PRECEDENCE section that states "for all other
+    # benefits, refer to the global handbook" -- so the model never learned it
+    # should check the global handbook, and answered with the regional-only
+    # figure. related_documents is baked onto every chunk of the document (see
+    # test_pipeline.py), so it shows up regardless of which specific chunk hit.
+    chunk = Chunk(
+        doc_id="apac-doc",
+        text="Gym reimbursement is $30/month.",
+        metadata={
+            "document_title": "APAC Benefits Handbook",
+            "is_latest": True,
+            "related_documents": [
+                {"relation_type": "reference", "topic": "other benefits", "target": "global Acme Employee Handbook"},
+                {"relation_type": "precedence", "topic": "PTO", "target": "global Acme Employee Handbook"},
+            ],
+        },
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert 'reference/"other benefits"->"global Acme Employee Handbook"' in result
+    assert 'precedence/"PTO"->"global Acme Employee Handbook"' in result
+    assert "get_related_documents(doc_id=apac-doc)" in result
+
+
+def test_format_search_results_omits_related_documents_when_absent():
+    chunk = Chunk(
+        doc_id="doc-1",
+        text="Some text.",
+        metadata={"document_title": "Acme Employee Handbook", "is_latest": True},
+    )
+
+    result = format_search_results([ScoredChunk(chunk=chunk, score=0.9)])
+
+    assert "related_documents" not in result
